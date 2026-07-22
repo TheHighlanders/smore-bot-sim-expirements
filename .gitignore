@@ -1,3 +1,8 @@
+# The user's global ~/.gitignore ignores **/*.md. In THIS project the markdown
+# is a deliverable (docs, the offline citation references, the citation policy),
+# so re-include it. Project .gitignore takes precedence over the global one.
+!**/*.md
+
 # PlatformIO
 .pio/
 .vscode/.browse.c_cpp.db*

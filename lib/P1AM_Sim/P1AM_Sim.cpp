@@ -75,6 +75,26 @@ uint32_t P1AM_Sim::readDiscrete(uint8_t slot, uint8_t channel) {
     return (val >> (channel - 1)) & 0x1UL;
 }
 
+int P1AM_Sim::readAnalog(uint8_t slot, uint8_t channel) {
+    uint8_t cmd[3] = { P1_READ_ANALOG_HDR, slot, channel };
+    uint8_t resp[P1_ANALOG_RESP_LEN];
+    _t.command(cmd, 3, resp, P1_ANALOG_RESP_LEN);
+    uint32_t v = (uint32_t)resp[0]
+               | ((uint32_t)resp[1] << 8)
+               | ((uint32_t)resp[2] << 16)
+               | ((uint32_t)resp[3] << 24);
+    return (int)v;
+}
+
+float P1AM_Sim::readTemperature(uint8_t slot, uint8_t channel) {
+    /* Same 4 bytes as readAnalog, reinterpreted as an IEEE-754 float (the real
+     * library returns temperature as a float). memcpy avoids aliasing UB. */
+    uint32_t v = (uint32_t)readAnalog(slot, channel);
+    float f;
+    memcpy(&f, &v, sizeof(f));
+    return f;
+}
+
 uint32_t P1AM_Sim::getFwVersion() {
     uint8_t cmd[1] = { P1_VERSION_HDR };
     uint8_t resp[P1_VERSION_RESP_LEN];

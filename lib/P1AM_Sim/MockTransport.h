@@ -40,6 +40,17 @@ public:
         return _model.out_image[slot - 1][byteIndex];
     }
 
+    /* Test-only: inject an analog reading (what a real module's ADC would see).
+     * On the Wokwi chip the same image is populated from control sliders. */
+    void setAnalog(uint8_t slot, uint8_t channel, int32_t counts) {
+        bm_set_analog(&_model, slot, channel, (uint32_t)counts);
+    }
+    void setTemperature(uint8_t slot, uint8_t channel, float celsius) {
+        uint32_t bits;
+        memcpy(&bits, &celsius, sizeof(bits));
+        bm_set_analog(&_model, slot, channel, bits);
+    }
+
 private:
     p1_base_model_t _model;
 };

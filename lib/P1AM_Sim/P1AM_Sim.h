@@ -75,6 +75,14 @@ public:
      *   channel == 0 : returns the whole module as a bitmap (LSB=ch1) */
     uint32_t readDiscrete(uint8_t slot, uint8_t channel = 0);
 
+    /* Read one analog input channel as raw counts (not scaled), matching the
+     * real API. [ref: docs/references/p1am-library.md -> P1AM.h:52] */
+    int readAnalog(uint8_t slot, uint8_t channel);
+
+    /* Read one temperature channel (P1-04THM/NTC) as a float, reinterpreting the
+     * same 4 bytes readAnalog returns. [ref: p1am-library.md -> P1AM.h:53] */
+    float readTemperature(uint8_t slot, uint8_t channel);
+
     /* Base controller firmware version. The real library documents this as
      * "byte format X.Y.ZZ" [ref: docs/references/p1am-library.md, P1AM.cpp:1152];
      * the sim returns a fixed raw value (see base_model.h bm_init). */

@@ -52,24 +52,29 @@ extern "C" {
  * [ref: docs/references/p1am-library.md#opcodes -> defines.h:56-77] */
 #define P1_MOD_HDR              0x02   /* enumerate: how many modules & their IDs */
 #define P1_VERSION_HDR          0x03   /* base firmware version */
+#define P1_CFG_HDR              0x10   /* configure a module (analog modules) */
 #define P1_READ_DISCRETE_HDR    0x50   /* read a module's discrete image */
+#define P1_READ_ANALOG_HDR      0x51   /* read one analog input channel (4 bytes) */
 #define P1_WRITE_DISCRETE_HDR   0x60   /* write a module's discrete outputs */
 
 /* Fixed response lengths (bytes the master clocks back in phase 2).
- * P1_MAX_SLOTS / P1_MAX_DO_BYTES come from module_db.h. */
+ * P1_MAX_SLOTS / P1_MAX_DO_BYTES / P1_MAX_AI_BYTES come from module_db.h. */
 #define P1_ENUM_RESP_LEN        (1 + 4 * P1_MAX_SLOTS)  /* count + 4 bytes/slot   = 61 */
 #define P1_WRITE_RESP_LEN       1      /* status byte                                   */
 #define P1_READ_RESP_LEN        4      /* discrete image as little-endian uint32        */
+#define P1_ANALOG_RESP_LEN      4      /* one analog channel: int32 little-endian        */
 #define P1_VERSION_RESP_LEN     4      /* firmware version as little-endian uint32       */
 #define P1_STATUS_OK            0x00
 #define P1_STATUS_BAD_SLOT      0xEE
 
-/* A simulated base controller: N modules, each with an output bit image. */
+/* A simulated base controller: per-slot discrete-output and analog-input images. */
 typedef struct {
     uint8_t  num_modules;                             /* 0..P1_MAX_SLOTS */
     uint32_t module_id[P1_MAX_SLOTS];                 /* per slot (index 0 == slot 1) */
     uint8_t  do_bytes[P1_MAX_SLOTS];                  /* cached from the module db     */
-    uint8_t  out_image[P1_MAX_SLOTS][P1_MAX_DO_BYTES];/* current output state (LSB=ch1)*/
+    uint8_t  ai_bytes[P1_MAX_SLOTS];                  /* cached from the module db     */
+    uint8_t  out_image[P1_MAX_SLOTS][P1_MAX_DO_BYTES];/* discrete output (LSB=ch1)     */
+    uint8_t  ai_image[P1_MAX_SLOTS][P1_MAX_AI_BYTES]; /* analog input: 4 bytes LE/ch   */
     uint32_t fw_version;                              /* reported by VERSION_HDR       */
 } p1_base_model_t;
 
@@ -91,6 +96,7 @@ static inline void bm_init(p1_base_model_t *m, const char *const *names, uint8_t
         }
         m->module_id[slot] = p->id;
         m->do_bytes[slot]  = p->doBytes;
+        m->ai_bytes[slot]  = p->aiBytes;
         slot++;
     }
     m->num_modules = slot;
@@ -99,6 +105,21 @@ static inline void bm_init(p1_base_model_t *m, const char *const *names, uint8_t
 /* True if `slot` (1-based) is a valid configured slot. */
 static inline int bm_valid_slot(const p1_base_model_t *m, uint8_t slot) {
     return slot >= 1 && slot <= m->num_modules;
+}
+
+/* Set an analog-input channel's raw value (int32, e.g. counts or float bits).
+ * Used by the Wokwi chip (from control sliders) and by host tests to inject an
+ * input reading. slot/channel are 1-based; LE across the 4 channel bytes. */
+static inline void bm_set_analog(p1_base_model_t *m, uint8_t slot,
+                                 uint8_t channel, uint32_t raw) {
+    if (!bm_valid_slot(m, slot) || channel < 1) return;
+    uint8_t off = (uint8_t)((channel - 1) * 4);
+    if ((uint16_t)off + 4 > P1_MAX_AI_BYTES) return;
+    uint8_t *img = m->ai_image[slot - 1];
+    img[off + 0] = (uint8_t)(raw & 0xFF);
+    img[off + 1] = (uint8_t)((raw >> 8) & 0xFF);
+    img[off + 2] = (uint8_t)((raw >> 16) & 0xFF);
+    img[off + 3] = (uint8_t)((raw >> 24) & 0xFF);
 }
 
 /*
@@ -182,6 +203,34 @@ static inline size_t bm_handle(p1_base_model_t *m,
         }
         return P1_READ_RESP_LEN;
     }
+
+    case P1_READ_ANALOG_HDR: {
+        /* cmd = [0x51, slot, channel]; response = that channel's 4 LE bytes.
+         * The raw value is whatever bm_set_analog stored -- int counts for
+         * P1-04AD, or the bit pattern of a float for P1-04THM/NTC. */
+        memset(resp, 0, P1_ANALOG_RESP_LEN);
+        if (cmd_len >= 3 && bm_valid_slot(m, cmd[1]) && cmd[2] >= 1) {
+            uint8_t slot = cmd[1];
+            uint8_t off  = (uint8_t)((cmd[2] - 1) * 4);
+            if ((uint16_t)off + 4 <= P1_MAX_AI_BYTES &&
+                off + 4 <= m->ai_bytes[slot - 1]) {
+                const uint8_t *img = m->ai_image[slot - 1];
+                for (uint8_t b = 0; b < P1_ANALOG_RESP_LEN; b++) {
+                    resp[b] = img[off + b];
+                }
+            }
+        }
+        return P1_ANALOG_RESP_LEN;
+    }
+
+    case P1_CFG_HDR:
+        /* cmd = [0x10, slot, config...]. Analog modules carry config bytes; the
+         * real base auto-configures them at init. The sim accepts and ACKs the
+         * config (values don't change simulated readings), so firmware that
+         * configures a module doesn't stall. */
+        resp[0] = bm_valid_slot(m, (cmd_len >= 2 ? cmd[1] : 0))
+                      ? P1_STATUS_OK : P1_STATUS_BAD_SLOT;
+        return P1_WRITE_RESP_LEN;
 
     default:
         resp[0] = P1_STATUS_OK;

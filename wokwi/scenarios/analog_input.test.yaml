@@ -1,0 +1,13 @@
+name: Analog input + thermocouple (P1-04AD-2 / P1-04THM)
+version: 1
+author: p1am-wokwi-lab
+# System-level integration test for the analog read path. The analog/temperature
+# values have no physical source in Wokwi, so they come from the base chip's
+# control sliders (ai_ch1 / temp_ch1) and are served on READ_ANALOG. Run with:
+#   wokwi-cli . --scenario wokwi/scenarios/analog_input.test.yaml
+steps:
+  - wait-serial: 'Ready'
+  - set-control: { part-id: base, control: ai_ch1,   value: 12345 }
+  - set-control: { part-id: base, control: temp_ch1, value: 100 }
+  # The sketch reports slot 3 / slot 4 channel 1 about once a second.
+  - wait-serial: 'AI1=12345 counts, T1=100.0 C'

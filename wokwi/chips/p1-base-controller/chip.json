@@ -5,22 +5,21 @@
   "license": "MIT",
   "docs": "https://github.com/facts-engineering/P1AM",
   "pins": [
-    "SCK",
-    "MOSI",
-    "MISO",
-    "CS",
-    "ACK",
-    "EN",
-    "VCC",
-    "GND",
+    "SCK", "MOSI", "MISO", "CS", "ACK", "EN", "VCC", "GND",
     "",
-    "OUT1",
-    "OUT2",
-    "OUT3",
-    "OUT4",
-    "OUT5",
-    "OUT6",
-    "OUT7",
-    "OUT8"
+    "S1_01", "S1_02", "S1_03", "S1_04", "S1_05", "S1_06", "S1_07", "S1_08",
+    "S1_09", "S1_10", "S1_11", "S1_12", "S1_13", "S1_14", "S1_15",
+    "",
+    "S2_1", "S2_2", "S2_3", "S2_4", "S2_5", "S2_6", "S2_7", "S2_8"
+  ],
+  "controls": [
+    { "id": "ai_ch1",   "label": "AI1 counts", "type": "range", "min": 0, "max": 65535, "step": 1 },
+    { "id": "ai_ch2",   "label": "AI2 counts", "type": "range", "min": 0, "max": 65535, "step": 1 },
+    { "id": "ai_ch3",   "label": "AI3 counts", "type": "range", "min": 0, "max": 65535, "step": 1 },
+    { "id": "ai_ch4",   "label": "AI4 counts", "type": "range", "min": 0, "max": 65535, "step": 1 },
+    { "id": "temp_ch1", "label": "Temp1 C",    "type": "range", "min": 0, "max": 150,   "step": 1 },
+    { "id": "temp_ch2", "label": "Temp2 C",    "type": "range", "min": 0, "max": 150,   "step": 1 },
+    { "id": "temp_ch3", "label": "Temp3 C",    "type": "range", "min": 0, "max": 150,   "step": 1 },
+    { "id": "temp_ch4", "label": "Temp4 C",    "type": "range", "min": 0, "max": 150,   "step": 1 }
   ]
 }

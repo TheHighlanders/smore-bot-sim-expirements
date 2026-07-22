@@ -1,28 +1,27 @@
-name: Discrete output module (P1-08TRS) over the base controller
+name: Digital + relay output over the base controller
 version: 1
 author: p1am-wokwi-lab
-# System-level integration test: drives the shield button and asserts that the
-# relay-module outputs energize in a "chase", proving the full SPI path
-# RP2040 -> base-controller chip -> OUT pins works. Run with:
+# System-level integration test for the discrete-output path (SPI -> base
+# controller chip -> OUT pins). Slot 1 is a P1-15TD1 (15-ch digital out),
+# slot 2 is a P1-08TRS relay. Run with:
 #   wokwi-cli . --scenario wokwi/scenarios/discrete_output.test.yaml
 steps:
-  # Base controller enumerated the P1-08TRS in slot 1.
-  - wait-serial: 'Base online. Modules found: 1'
-  - wait-serial: 'Slot 1: P1-08TRS'
+  - wait-serial: 'Base online. Modules found: 4'
+  - wait-serial: 'slot 1: P1-15TD1'
   - wait-serial: 'Ready'
 
-  # Press 1 -> chase step 0 -> channel 1 (OUT1) energized.
+  # Press 1 -> chase step 0 -> digital channel 1 (S1_01); relay held while pressed.
   - set-control: { part-id: btn, control: pressed, value: 1 }
-  - delay: 80ms
+  - wait-serial: 'DO step 0 mask=0x1'
+  - expect-pin: { part-id: base, pin: S1_01, value: 1 }
+  - expect-pin: { part-id: base, pin: S2_1,  value: 1 }
   - set-control: { part-id: btn, control: pressed, value: 0 }
-  - wait-serial: 'Relay step 0 mask=0x1'
-  - expect-pin: { part-id: base, pin: OUT1, value: 1 }
-  - expect-pin: { part-id: base, pin: OUT2, value: 0 }
+  - delay: 100ms
+  - expect-pin: { part-id: base, pin: S2_1,  value: 0 }
 
-  # Press 2 -> chase step 1 -> channel 2 (OUT2) on, OUT1 back off.
+  # Press 2 -> chase step 1 -> digital channel 2 (S1_02), channel 1 back off.
   - set-control: { part-id: btn, control: pressed, value: 1 }
-  - delay: 80ms
+  - wait-serial: 'DO step 1 mask=0x2'
+  - expect-pin: { part-id: base, pin: S1_02, value: 1 }
+  - expect-pin: { part-id: base, pin: S1_01, value: 0 }
   - set-control: { part-id: btn, control: pressed, value: 0 }
-  - wait-serial: 'Relay step 1 mask=0x2'
-  - expect-pin: { part-id: base, pin: OUT2, value: 1 }
-  - expect-pin: { part-id: base, pin: OUT1, value: 0 }

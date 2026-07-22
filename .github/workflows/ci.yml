@@ -103,3 +103,10 @@ jobs:
           path: '.'
           timeout: 20000
           scenario: 'wokwi/scenarios/gpio_shield.test.yaml'
+      - name: Analog-input scenario
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: '.'
+          timeout: 20000
+          scenario: 'wokwi/scenarios/analog_input.test.yaml'

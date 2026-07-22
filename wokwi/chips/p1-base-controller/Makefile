@@ -22,8 +22,13 @@ WASI_ROOT ?= /opt/wasi-libc
 # locally-built chip.wasm is identical to the CI-built one. -I$(SHARED) lets
 # main.c say #include "base_model.h"; CI instead copies the shared headers next
 # to main.c (see .github/workflows/ci.yml), so both build paths resolve it.
+# -Wno-error=deprecated: newer clang (wasi-sdk 25+/LLVM 20+) deprecates the
+# --target=wasm32-wasi spelling (prefers wasm32-wasip1) and -Werror would make
+# that fatal; the older clang in CI doesn't warn, so this is inert there and
+# keeps both builds green. (Same wasm either way.)
 CLANG_FLAGS = --target=wasm32-unknown-wasi --sysroot $(WASI_ROOT) \
-              -nostartfiles -Wl,--export-table -Wl,--no-entry -Werror \
+              -nostartfiles -Wl,--export-table -Wl,--no-entry \
+              -Werror -Wno-error=deprecated \
               -I$(SHARED) -Isrc
 
 .PHONY: all clean

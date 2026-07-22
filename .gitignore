@@ -19,6 +19,10 @@
 # Host build output
 build/
 
+# Repo-local toolchains (wasi-sdk downloaded by tools/get-wasi-sdk.sh) — large,
+# machine/arch-specific; re-download with `make chip-local`.
+.toolchains/
+
 # Custom chip build output
 wokwi/chips/*/dist/
 

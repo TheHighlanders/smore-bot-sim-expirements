@@ -183,7 +183,7 @@ wire timing is simplified.
 | Custom chip C source (4-slot lineup) | ✅ syntax/type-checked with clang (both `-I` and CI include paths) |
 | `diagram.json` / `chip.json` | ✅ valid JSON; every `base:` pin ref cross-checked against chip.json; pin names verified against Wokwi docs |
 | Makefile / Wokwi toml | ✅ parse-checked |
-| WASM chip build | ⛔ not built here (needs clang + wasi-libc / the CI action) |
+| WASM chip build | ✅ built with wasi-sdk 33 (`make chip-local`) → valid wasm module exporting `chipInit`, importing the Wokwi API |
 | RP2040 firmware build | ⛔ not built here (needs PlatformIO + RP2040 core) |
 | End-to-end run in Wokwi (incl. multi-module diagram/scenarios) | ⛔ **not yet run** — see §9 |
 

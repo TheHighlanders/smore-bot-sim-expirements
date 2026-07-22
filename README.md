@@ -39,8 +39,8 @@ pio test -e native       # full Unity suite (needs PlatformIO)
 # 2. Build the RP2040 firmware for Wokwi
 pio run -e pico          # -> .pio/build/pico/firmware.uf2
 
-# 3. Build the custom chip to WASM (needs clang + wasi-libc; CI does this for you)
-make chip                # -> wokwi/chips/p1-base-controller/dist/chip.wasm
+# 3. Build the custom chip to WASM (downloads a repo-local wasi-sdk once)
+make chip-local          # -> wokwi/chips/p1-base-controller/dist/chip.wasm
 ```
 
 Then open the folder in VS Code with the **Wokwi extension** and start the
@@ -61,8 +61,8 @@ wokwi-cli . --scenario wokwi/scenarios/discrete_output.test.yaml
 
 Two build outputs are needed before Wokwi can run: the **RP2040 firmware**
 (PlatformIO) and the **base-controller chip compiled to WASM**. The chip WASM is
-the only step that needs a special toolchain — the dev container (below) or CI
-provide it.
+the only step that needs a special toolchain; `make chip-local` fetches it for
+you (host), or use CI / the dev container.
 
 **Prerequisites:** VS Code with the **PlatformIO IDE** and **Wokwi for VS Code**
 extensions (both recommended in `.vscode/extensions.json`). The Wokwi extension
@@ -71,15 +71,15 @@ needs a free license once: command palette → `Wokwi: Request a new License`.
 1. **Firmware:** `pio run -e pico` → `.pio/build/pico/firmware.uf2` + `.elf`
    (the paths `wokwi.toml` expects).
 2. **Custom chip → WASM.** Pick one:
-   - **Host build with wasi-sdk (recommended, esp. on a corporate network):**
-     download a [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases)
-     release for your host (e.g. `wasi-sdk-24.0-arm64-macos.tar.gz`), unpack it,
-     then:
+   - **Host build (recommended, esp. on a corporate network):**
      ```bash
-     make chip CLANG=/path/to/wasi-sdk/bin/clang \
-               WASI_ROOT=/path/to/wasi-sdk/share/wasi-sysroot
+     make chip-local
      ```
-     The download runs on your host, which already trusts your corporate CA.
+     One command: [tools/get-wasi-sdk.sh](tools/get-wasi-sdk.sh) downloads a
+     self-contained wasi-sdk into `.toolchains/` (gitignored), then `make chip`
+     builds `dist/chip.wasm`. The download runs on your host, which already
+     trusts your corporate CA — after it, chip builds are offline. (Verified:
+     produces a valid wasm module exporting `chipInit`.)
    - **CI artifact (no local toolchain at all):** push to GitHub; the
      `build-chip` job runs without any Wokwi token and uploads a `chip`
      artifact — unzip `chip.wasm` + `chip.json` into
@@ -89,8 +89,8 @@ needs a free license once: command palette → `Wokwi: Request a new License`.
      download fails with `curl (60) unable to get local issuer certificate`.
      Fix (macOS): run `.devcontainer/import-host-certs.sh` to export your host
      root CAs into [.devcontainer/certs/](.devcontainer/certs/), then **Dev
-     Containers: Rebuild Container**. (Those `*.crt` are gitignored.) Or just use
-     the host/CI options above.
+     Containers: Rebuild Container**. (Those `*.crt` are gitignored.) The host
+     option above is usually less hassle behind a proxy.
 3. **Run:** open [diagram.json](diagram.json) and press ▶ (or `Wokwi: Start
    Simulator`). It reads `wokwi.toml`, loads the firmware + chip, and starts.
 

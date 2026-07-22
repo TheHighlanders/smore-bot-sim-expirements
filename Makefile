@@ -5,7 +5,9 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra
 INCLUDES  = -Ishared -Ilib/P1AM_Sim
 
-.PHONY: host-test chip test clean
+WASI_SDK_DIR := .toolchains/wasi-sdk
+
+.PHONY: host-test chip chip-local test clean
 
 ## host-test: build+run the dependency-free host smoke test (needs only g++)
 host-test:
@@ -13,9 +15,22 @@ host-test:
 	$(CXX) $(CXXFLAGS) $(INCLUDES) lib/P1AM_Sim/P1AM_Sim.cpp tools/host_smoke.cpp -o build/host_smoke
 	./build/host_smoke
 
-## chip: build the base-controller WASM chip (needs clang + wasi-libc)
+## chip: build the base-controller WASM chip. Auto-uses the repo-local wasi-sdk
+## (.toolchains/wasi-sdk) if present; otherwise expects clang + WASI_ROOT.
 chip:
+ifneq ($(wildcard $(WASI_SDK_DIR)/bin/clang),)
+	$(MAKE) -C wokwi/chips/p1-base-controller \
+		CLANG=$(CURDIR)/$(WASI_SDK_DIR)/bin/clang \
+		WASI_ROOT=$(CURDIR)/$(WASI_SDK_DIR)/share/wasi-sysroot
+else
 	$(MAKE) -C wokwi/chips/p1-base-controller
+endif
+
+## chip-local: download a repo-local wasi-sdk once (online), then build the chip
+## offline. The host trusts your corporate proxy CA, so the download works.
+chip-local:
+	./tools/get-wasi-sdk.sh
+	$(MAKE) chip
 
 ## test: the full Unity suite (needs PlatformIO)
 test:

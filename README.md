@@ -71,14 +71,24 @@ needs a free license once: command palette → `Wokwi: Request a new License`.
 1. **Firmware:** `pio run -e pico` → `.pio/build/pico/firmware.uf2` + `.elf`
    (the paths `wokwi.toml` expects).
 2. **Custom chip → WASM.** Pick one:
-   - **Dev container (zero host setup):** “Dev Containers: Reopen in Container”,
-     then `make chip`. The container ([.devcontainer/](.devcontainer/)) ships
-     wasi-sdk + PlatformIO.
-   - **CI artifact (no toolchain at all):** push to GitHub; the `build-chip`
-     job runs without any Wokwi token and uploads a `chip` artifact — unzip
-     `chip.wasm` + `chip.json` into `wokwi/chips/p1-base-controller/dist/`.
-   - **Local:** `make chip WASI_ROOT=<wasi-sdk>/share/wasi-sysroot` (install a
-     [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases) release first).
+   - **Host build with wasi-sdk (recommended, esp. on a corporate network):**
+     download a [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases)
+     release for your host (e.g. `wasi-sdk-24.0-arm64-macos.tar.gz`), unpack it,
+     then:
+     ```bash
+     make chip CLANG=/path/to/wasi-sdk/bin/clang \
+               WASI_ROOT=/path/to/wasi-sdk/share/wasi-sysroot
+     ```
+     The download runs on your host, which already trusts your corporate CA.
+   - **CI artifact (no local toolchain at all):** push to GitHub; the
+     `build-chip` job runs without any Wokwi token and uploads a `chip`
+     artifact — unzip `chip.wasm` + `chip.json` into
+     `wokwi/chips/p1-base-controller/dist/`.
+   - **Dev container:** “Dev Containers: Reopen in Container”, then `make chip`.
+     ⚠️ If your network intercepts TLS, the in-container wasi-sdk download fails
+     with `curl (60) unable to get local issuer certificate` — add your
+     corporate root CA to [.devcontainer/certs/](.devcontainer/certs/) (see the
+     Dockerfile note) and rebuild, or just use the host/CI options above.
 3. **Run:** open [diagram.json](diagram.json) and press ▶ (or `Wokwi: Start
    Simulator`). It reads `wokwi.toml`, loads the firmware + chip, and starts.
 

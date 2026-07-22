@@ -24,6 +24,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
+# Corporate TLS-intercepting proxy support. If your network MITMs TLS (curl
+# error 60 "unable to get local issuer certificate" during build), export your
+# corporate root CA(s) to .devcontainer/certs/ as *.crt (PEM) and rebuild. With
+# no certs present this is a no-op. On macOS: Keychain Access -> System/System
+# Roots -> select the corporate root -> File > Export Items -> .pem (rename .crt).
+COPY certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+
 # wasi-sdk (clang + wasi-sysroot + wasm builtins) for the custom-chip build.
 RUN set -eux; \
     case "${TARGETARCH}" in \

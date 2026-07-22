@@ -10,6 +10,12 @@
 SOURCES   = src/main.c
 TARGET    = dist/chip.wasm
 SHARED    = ../../../shared
+# Override CLANG/WASI_ROOT for a local build, e.g. with a wasi-sdk download
+# (works on the host even behind a TLS-intercepting corporate proxy):
+#   make chip CLANG=/opt/wasi-sdk/bin/clang \
+#             WASI_ROOT=/opt/wasi-sdk/share/wasi-sysroot
+# In the dev container both are already on PATH/env.
+CLANG     ?= clang
 WASI_ROOT ?= /opt/wasi-libc
 
 # Flags mirror the official wokwi/wokwi-chip-clang-action (used by CI) so the
@@ -30,7 +36,7 @@ dist:
 	mkdir -p dist
 
 $(TARGET): dist $(SOURCES) src/wokwi-api.h $(SHARED)/base_model.h $(SHARED)/module_db.h
-	clang $(CLANG_FLAGS) -o $(TARGET) $(SOURCES)
+	$(CLANG) $(CLANG_FLAGS) -o $(TARGET) $(SOURCES)
 
 dist/chip.json: dist chip.json
 	cp chip.json dist/chip.json

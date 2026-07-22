@@ -1,0 +1,3 @@
+# Drop corporate root CA files here as *.crt (PEM) to let the dev-container
+# build trust a TLS-intercepting proxy. Empty by default (no-op). See the
+# Dockerfile comment above the COPY certs/ line.

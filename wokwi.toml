@@ -1,0 +1,18 @@
+# Wokwi project config (kept at repo root so the VS Code extension finds it).
+#
+# `firmware`/`elf` point at PlatformIO's build output for the `pico` env.
+# `gdbServerPort` enables source-level step debugging from VS Code.
+# The [[chip]] block loads our compiled base-controller custom chip; Wokwi
+# expects chip.json next to the .wasm (dist/chip.json, produced by its Makefile).
+# Key reference: docs/references/wokwi/vscode-project-config.md (toml keys),
+#               docs/references/wokwi/vscode-debugging.md (gdbServerPort).
+
+[wokwi]
+version = 1
+firmware = '.pio/build/pico/firmware.uf2'
+elf = '.pio/build/pico/firmware.elf'
+gdbServerPort = 3333
+
+[[chip]]
+name = 'p1-base-controller'
+binary = 'wokwi/chips/p1-base-controller/dist/chip.wasm'

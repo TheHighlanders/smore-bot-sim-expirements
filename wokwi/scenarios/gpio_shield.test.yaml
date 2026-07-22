@@ -1,0 +1,19 @@
+name: GPIO shield (direct Arduino pins)
+version: 1
+author: p1am-wokwi-lab
+# System-level integration test for the GPIO shield path, which does NOT go
+# through the base controller: the button drives a plain digital-output LED
+# directly off an RP2040 pin. Run with:
+#   wokwi-cli . --scenario wokwi/scenarios/gpio_shield.test.yaml
+steps:
+  - wait-serial: 'Ready'
+
+  # Button pressed -> DO LED (GP14) mirrors it HIGH.
+  - set-control: { part-id: btn, control: pressed, value: 1 }
+  - delay: 60ms
+  - expect-pin: { part-id: pico, pin: GP14, value: 1 }
+
+  # Button released -> DO LED back LOW.
+  - set-control: { part-id: btn, control: pressed, value: 0 }
+  - delay: 60ms
+  - expect-pin: { part-id: pico, pin: GP14, value: 0 }

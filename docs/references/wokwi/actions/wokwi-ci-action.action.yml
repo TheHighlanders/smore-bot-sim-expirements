@@ -1,0 +1,65 @@
+# Offline reference snapshot for citation. Source: https://github.com/wokwi/wokwi-ci-action/blob/main/action.yml
+# Retrieved: 2026-07-22
+---
+name: 'Wokwi IoT and Embedded System Simulator'
+description: 'This action tests your firmware builds with the Wokwi Simulator'
+branding:
+  color: blue
+  icon: play
+inputs:
+  token:
+    description: 'Wokwi API token'
+    required: true
+  path:
+    description: 'Path to the directory where wokwi.toml is, relative to the root of your repository'
+    default: '/'
+    required: false
+  timeout:
+    description: 'Timeout in milliseconds for the simulation'
+    default: '10000'
+    required: false
+  expect_text:
+    description: 'Text to expect in the serial output, test will fail if not found'
+    default: ''
+    required: false
+  fail_text:
+    description: 'Text that fails the test if found in the serial output'
+    default: ''
+    required: false
+  scenario:
+    description: 'Path to scenario yaml file (relative to project directory)'
+    default: ''
+    required: false
+  diagram_file:
+    description: 'Custom diagram file'
+    default: 'diagram.json'
+    required: false
+  elf:
+    description: 'Custom firmware ELF path'
+    default: ''
+    required: false
+  serial_log_file:
+    description: 'Serial log file to be written (relative to project directory)'
+    default: ''
+    required: false
+    
+runs:
+  using: 'composite'
+  steps:
+    - name: Install wokwi-cli
+      run: |
+        wget -q -O /usr/local/bin/wokwi-cli https://github.com/wokwi/wokwi-cli/releases/latest/download/wokwi-cli-linuxstatic-x64
+        chmod +x /usr/local/bin/wokwi-cli
+      shell: bash
+    - run: |
+        wokwi-cli --timeout "${{ inputs.timeout }}" --expect-text "$CI_EXPECT_TEXT" \
+          ${{ inputs.diagram_file != '' && format('--diagram-file "{0}"', inputs.diagram_file) || '' }} \
+          ${{ inputs.elf != '' && format('--elf "{0}"', inputs.elf) || '' }} \
+          --fail-text "$CI_FAIL_TEXT" --scenario "${{ inputs.scenario }}" "${GITHUB_WORKSPACE}/${{ inputs.path }}" \
+          --serial-log-file "${{ inputs.serial_log_file }}"
+      env:
+        WOKWI_CLI_TOKEN: ${{ inputs.token }}
+        FORCE_COLOR: 2  # Enables color output - see https://github.com/chalk/supports-color/issues/106
+        CI_EXPECT_TEXT: ${{ inputs.expect_text }}
+        CI_FAIL_TEXT: ${{ inputs.fail_text }}
+      shell: bash

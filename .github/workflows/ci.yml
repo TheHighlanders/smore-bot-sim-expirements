@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ---- Tier 1a: dependency-free host smoke (fast, no toolchain) ----
+  host-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host smoke test (g++)
+        run: make host-test
+
+  # ---- Tier 1b: full Unity unit tests on the host ----
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install platformio
+      - name: Unity native tests
+        run: pio test -e native
+
+  # ---- Build the base-controller custom chip -> WASM ----
+  build-chip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The official action runs a fixed clang from the repo root with no -I,
+      # so stage the shared headers next to main.c (main.c uses #include "base_model.h").
+      - name: Stage shared headers next to the chip source
+        run: cp shared/base_model.h shared/module_db.h wokwi/chips/p1-base-controller/src/
+      - name: Compile custom chip to WASM
+        uses: wokwi/wokwi-chip-clang-action@main
+        with:
+          sources: 'wokwi/chips/p1-base-controller/src/main.c'
+          chip-json: 'wokwi/chips/p1-base-controller/chip.json'
+      # The action emits ./dist/chip.wasm at the repo root; move it next to
+      # chip.json so it matches the binary path in wokwi.toml.
+      - name: Collect chip artifacts
+        run: |
+          mkdir -p wokwi/chips/p1-base-controller/dist
+          mv dist/chip.wasm wokwi/chips/p1-base-controller/dist/chip.wasm
+          cp wokwi/chips/p1-base-controller/chip.json wokwi/chips/p1-base-controller/dist/chip.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chip
+          path: wokwi/chips/p1-base-controller/dist/
+
+  # ---- Build the RP2040 firmware for Wokwi ----
+  build-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install platformio
+      - name: Build RP2040 firmware
+        run: pio run -e pico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            .pio/build/pico/firmware.uf2
+            .pio/build/pico/firmware.elf
+
+  # ---- Tier 2: system-level Wokwi scenarios (needs a CI token) ----
+  # Set repo variable ENABLE_WOKWI_CI=true and secret WOKWI_CLI_TOKEN
+  # (from https://wokwi.com/dashboard/ci) to enable. Skipped otherwise so
+  # forks without a token stay green.
+  # Action inputs (token/path/timeout/scenario) are defined in
+  # docs/references/wokwi/actions/wokwi-ci-action.action.yml.
+  wokwi-tests:
+    needs: [build-chip, build-firmware]
+    runs-on: ubuntu-latest
+    if: ${{ vars.ENABLE_WOKWI_CI == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: chip
+          path: wokwi/chips/p1-base-controller/dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: .pio/build/pico/
+      - name: Discrete-output module scenario
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: '.'
+          timeout: 20000
+          scenario: 'wokwi/scenarios/discrete_output.test.yaml'
+      - name: GPIO-shield scenario
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: '.'
+          timeout: 20000
+          scenario: 'wokwi/scenarios/gpio_shield.test.yaml'

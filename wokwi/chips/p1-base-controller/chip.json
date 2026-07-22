@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "P1 Base Controller (sim)",
+  "author": "p1am-wokwi-lab",
+  "license": "MIT",
+  "docs": "https://github.com/facts-engineering/P1AM",
+  "pins": [
+    "SCK",
+    "MOSI",
+    "MISO",
+    "CS",
+    "ACK",
+    "EN",
+    "VCC",
+    "GND",
+    "",
+    "OUT1",
+    "OUT2",
+    "OUT3",
+    "OUT4",
+    "OUT5",
+    "OUT6",
+    "OUT7",
+    "OUT8"
+  ]
+}

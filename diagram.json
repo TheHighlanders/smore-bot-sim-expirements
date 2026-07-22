@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "author": "p1am-wokwi-lab",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-pi-pico", "id": "pico", "top": 180, "left": 0, "attrs": {} },
+    { "type": "chip-p1-base-controller", "id": "base", "top": -40, "left": 430, "attrs": {} },
+
+    { "type": "wokwi-led", "id": "r1", "top": -180, "left": 360, "attrs": { "color": "green", "label": "R1" } },
+    { "type": "wokwi-led", "id": "r2", "top": -180, "left": 410, "attrs": { "color": "green", "label": "R2" } },
+    { "type": "wokwi-led", "id": "r3", "top": -180, "left": 460, "attrs": { "color": "green", "label": "R3" } },
+    { "type": "wokwi-led", "id": "r4", "top": -180, "left": 510, "attrs": { "color": "green", "label": "R4" } },
+    { "type": "wokwi-led", "id": "r5", "top": -180, "left": 560, "attrs": { "color": "green", "label": "R5" } },
+    { "type": "wokwi-led", "id": "r6", "top": -180, "left": 610, "attrs": { "color": "green", "label": "R6" } },
+    { "type": "wokwi-led", "id": "r7", "top": -180, "left": 660, "attrs": { "color": "green", "label": "R7" } },
+    { "type": "wokwi-led", "id": "r8", "top": -180, "left": 710, "attrs": { "color": "green", "label": "R8" } },
+
+    { "type": "wokwi-relay-module", "id": "relay1", "top": 100, "left": 760, "attrs": {} },
+
+    { "type": "wokwi-pushbutton", "id": "btn", "top": 250, "left": -220, "attrs": { "color": "green" } },
+    { "type": "wokwi-led", "id": "doled", "top": 200, "left": -110, "attrs": { "color": "yellow", "label": "DO" } },
+    { "type": "wokwi-led", "id": "pwmled", "top": 280, "left": -110, "attrs": { "color": "blue", "label": "PWM" } },
+    { "type": "wokwi-potentiometer", "id": "pot", "top": 380, "left": -230, "attrs": {} }
+  ],
+  "connections": [
+    [ "pico:GP18", "base:SCK",  "green",  [] ],
+    [ "pico:GP19", "base:MOSI", "blue",   [] ],
+    [ "base:MISO", "pico:GP16", "purple", [] ],
+    [ "pico:GP17", "base:CS",   "orange", [] ],
+    [ "base:ACK",  "pico:GP20", "gold",   [] ],
+    [ "pico:GP21", "base:EN",   "cyan",   [] ],
+    [ "pico:3V3",  "base:VCC",  "red",    [] ],
+    [ "base:GND",  "pico:GND.1","black",  [] ],
+
+    [ "base:OUT1", "r1:A", "green", [] ],
+    [ "base:OUT2", "r2:A", "green", [] ],
+    [ "base:OUT3", "r3:A", "green", [] ],
+    [ "base:OUT4", "r4:A", "green", [] ],
+    [ "base:OUT5", "r5:A", "green", [] ],
+    [ "base:OUT6", "r6:A", "green", [] ],
+    [ "base:OUT7", "r7:A", "green", [] ],
+    [ "base:OUT8", "r8:A", "green", [] ],
+    [ "r1:C", "pico:GND.2", "black", [] ],
+    [ "r2:C", "pico:GND.2", "black", [] ],
+    [ "r3:C", "pico:GND.2", "black", [] ],
+    [ "r4:C", "pico:GND.2", "black", [] ],
+    [ "r5:C", "pico:GND.3", "black", [] ],
+    [ "r6:C", "pico:GND.3", "black", [] ],
+    [ "r7:C", "pico:GND.3", "black", [] ],
+    [ "r8:C", "pico:GND.3", "black", [] ],
+
+    [ "base:OUT1",  "relay1:IN",  "green", [] ],
+    [ "pico:3V3",   "relay1:VCC", "red",   [] ],
+    [ "relay1:GND", "pico:GND.4", "black", [] ],
+
+    [ "pico:GP15", "btn:1.l",    "green",  [] ],
+    [ "btn:2.l",   "pico:GND.5", "black",  [] ],
+    [ "pico:GP14", "doled:A",    "yellow", [] ],
+    [ "doled:C",   "pico:GND.6", "black",  [] ],
+    [ "pico:GP13", "pwmled:A",   "blue",   [] ],
+    [ "pwmled:C",  "pico:GND.7", "black",  [] ],
+    [ "pico:3V3",  "pot:VCC",    "red",    [] ],
+    [ "pot:SIG",   "pico:GP26",  "white",  [] ],
+    [ "pot:GND",   "pico:GND.8", "black",  [] ]
+  ]
+}

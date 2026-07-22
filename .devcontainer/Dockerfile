@@ -25,10 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Corporate TLS-intercepting proxy support. If your network MITMs TLS (curl
-# error 60 "unable to get local issuer certificate" during build), export your
-# corporate root CA(s) to .devcontainer/certs/ as *.crt (PEM) and rebuild. With
-# no certs present this is a no-op. On macOS: Keychain Access -> System/System
-# Roots -> select the corporate root -> File > Export Items -> .pem (rename .crt).
+# error 60 "unable to get local issuer certificate" during build), populate
+# .devcontainer/certs/ with your host's root CAs and rebuild. On macOS just run
+#   .devcontainer/import-host-certs.sh
+# (exports the System-keychain roots, incl. e.g. the Zscaler root). With no
+# certs present this is a harmless no-op.
 COPY certs/ /usr/local/share/ca-certificates/
 RUN update-ca-certificates
 

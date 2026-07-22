@@ -85,10 +85,12 @@ needs a free license once: command palette → `Wokwi: Request a new License`.
      artifact — unzip `chip.wasm` + `chip.json` into
      `wokwi/chips/p1-base-controller/dist/`.
    - **Dev container:** “Dev Containers: Reopen in Container”, then `make chip`.
-     ⚠️ If your network intercepts TLS, the in-container wasi-sdk download fails
-     with `curl (60) unable to get local issuer certificate` — add your
-     corporate root CA to [.devcontainer/certs/](.devcontainer/certs/) (see the
-     Dockerfile note) and rebuild, or just use the host/CI options above.
+     ⚠️ If your network intercepts TLS (e.g. Zscaler), the in-container wasi-sdk
+     download fails with `curl (60) unable to get local issuer certificate`.
+     Fix (macOS): run `.devcontainer/import-host-certs.sh` to export your host
+     root CAs into [.devcontainer/certs/](.devcontainer/certs/), then **Dev
+     Containers: Rebuild Container**. (Those `*.crt` are gitignored.) Or just use
+     the host/CI options above.
 3. **Run:** open [diagram.json](diagram.json) and press ▶ (or `Wokwi: Start
    Simulator`). It reads `wokwi.toml`, loads the firmware + chip, and starts.
 

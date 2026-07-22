@@ -1,3 +1,8 @@
+# Corporate CA certs exported into the dev-container trust dir are local,
+# network-specific trust material — keep them out of the repo (the .gitkeep and
+# the Dockerfile mechanism are what's tracked).
+.devcontainer/certs/*.crt
+
 # The user's global ~/.gitignore ignores **/*.md. In THIS project the markdown
 # is a deliverable (docs, the offline citation references, the citation policy),
 # so re-include it. Project .gitignore takes precedence over the global one.

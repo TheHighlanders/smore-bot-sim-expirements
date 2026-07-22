@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "wokwi.wokwi-vscode",
+    "platformio.platformio-ide",
+    "ms-vscode.cpptools"
+  ]
+}

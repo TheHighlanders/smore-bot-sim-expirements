@@ -1,0 +1,14 @@
+{
+  "name": "P1AM Wokwi Lab",
+  "build": { "dockerfile": "Dockerfile" },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "wokwi.wokwi-vscode",
+        "platformio.platformio-ide",
+        "ms-vscode.cpptools"
+      ]
+    }
+  },
+  "postCreateCommand": "make host-test && echo 'toolchain:' && clang --version | head -1 && pio --version"
+}

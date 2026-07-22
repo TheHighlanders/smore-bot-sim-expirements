@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Wokwi: Debug RP2040 (GDB)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.pio/build/pico/firmware.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "arm-none-eabi-gdb",
+      "miDebuggerServerAddress": "localhost:3333",
+      "stopAtEntry": false,
+      "externalConsole": false
+    }
+  ]
+}

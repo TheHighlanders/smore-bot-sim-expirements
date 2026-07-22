@@ -57,11 +57,38 @@ wokwi-cli . --scenario wokwi/scenarios/discrete_output.test.yaml
   the next **green relay indicator** energizes (SPI → base controller → module).
   This is the whole lesson: two outputs, two very different signal paths.
 
-## Step debugging
+## Running in Wokwi — step by step
 
-`wokwi.toml` sets `gdbServerPort = 3333`. In VS Code: start the Wokwi simulation
-**first**, then launch the debugger — set breakpoints in `src/main.cpp` and step
-through `P1.writeDiscrete()` into the transport.
+Two build outputs are needed before Wokwi can run: the **RP2040 firmware**
+(PlatformIO) and the **base-controller chip compiled to WASM**. The chip WASM is
+the only step that needs a special toolchain — the dev container (below) or CI
+provide it.
+
+**Prerequisites:** VS Code with the **PlatformIO IDE** and **Wokwi for VS Code**
+extensions (both recommended in `.vscode/extensions.json`). The Wokwi extension
+needs a free license once: command palette → `Wokwi: Request a new License`.
+
+1. **Firmware:** `pio run -e pico` → `.pio/build/pico/firmware.uf2` + `.elf`
+   (the paths `wokwi.toml` expects).
+2. **Custom chip → WASM.** Pick one:
+   - **Dev container (zero host setup):** “Dev Containers: Reopen in Container”,
+     then `make chip`. The container ([.devcontainer/](.devcontainer/)) ships
+     wasi-sdk + PlatformIO.
+   - **CI artifact (no toolchain at all):** push to GitHub; the `build-chip`
+     job runs without any Wokwi token and uploads a `chip` artifact — unzip
+     `chip.wasm` + `chip.json` into `wokwi/chips/p1-base-controller/dist/`.
+   - **Local:** `make chip WASI_ROOT=<wasi-sdk>/share/wasi-sysroot` (install a
+     [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases) release first).
+3. **Run:** open [diagram.json](diagram.json) and press ▶ (or `Wokwi: Start
+   Simulator`). It reads `wokwi.toml`, loads the firmware + chip, and starts.
+
+### Step debugging
+
+`wokwi.toml` sets `gdbServerPort = 3333` and [.vscode/launch.json](.vscode/launch.json)
+has a matching `Wokwi: Debug RP2040 (GDB)` config. **Start the simulator first,
+then press F5** — breakpoint in `src/main.cpp`, step through `P1.writeDiscrete()`
+into the transport. If GDB can't launch, set `miDebuggerPath` to your
+`arm-none-eabi-gdb` (PlatformIO installs one under `~/.platformio/packages/`).
 
 ## Layout
 

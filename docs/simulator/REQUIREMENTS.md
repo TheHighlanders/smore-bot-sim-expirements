@@ -99,7 +99,7 @@ reads outputs); exact encoding finalized at implementation.
 | `tunnel_exit` | bool | tray at tunnel exit |
 | `tunnel_temp_c` | f32 | tunnel temperature |
 | `run` | bool | operator run/stop (E-stop clear) |
-| `dispense_confirm[0..2]` | bool | *(proposed, optional)* a unit actually left the chute — lets the controller close the loop on contents (see §5.1) |
+| `dispense_confirm[0..2]` | u8 | units that actually left the chute on the last pulse (drop-counter). Used by the closed-loop controller variant; open-loop ignores it (see §5.1, §12) |
 
 **Outputs (controller → world), each tick**
 
@@ -240,3 +240,25 @@ operation.
   nominal speed and stops for safety; per-tray speed changes are out of scope now.)
 - Open: does a tray enter only when the operator injects one, or continuously?
   (Draft: on demand via "inject tray".)
+
+## 12. Multiple controllers & live comparison
+
+The simulator hosts a **registry of controller implementations**, each conforming
+to the §4 contract (init / `tick(inputs)`→outputs / exposed state). This is the
+seam the real WASM controllers plug into — swapping or adding a variant needs no
+visualizer changes.
+
+- **Switch (implemented in the mockup):** pick which controller drives the line;
+  seeded with `open-loop` (ignores `dispense_confirm`) and `closed-loop` (retries
+  a miss, flags over/under-fill). Good for A/B by re-running the same scenario.
+- **Live side-by-side (next):** run N controllers in **parallel worlds** fed an
+  identical, deterministic stimulus (same tray injections + same fault schedule),
+  rendered as stacked line views with a shared/compared timeline and an outcome
+  tally (good vs mis-filled s'mores). Shows divergent *outcomes* live — e.g.
+  open-loop ships a graham-less s'more while closed-loop detects and flags it
+  under the same fault.
+
+Design notes: each controller drives its **own** world copy (no command
+conflict); the stimulus is a shared script so the comparison is fair and
+reproducible; the same registry + contract is how further variants (e.g. a
+position-sensorless timed controller) get added.

@@ -251,12 +251,13 @@ visualizer changes.
 - **Switch (implemented in the mockup):** pick which controller drives the line;
   seeded with `open-loop` (ignores `dispense_confirm`) and `closed-loop` (retries
   a miss, flags over/under-fill). Good for A/B by re-running the same scenario.
-- **Live side-by-side (next):** run N controllers in **parallel worlds** fed an
-  identical, deterministic stimulus (same tray injections + same fault schedule),
-  rendered as stacked line views with a shared/compared timeline and an outcome
-  tally (good vs mis-filled s'mores). Shows divergent *outcomes* live — e.g.
-  open-loop ships a graham-less s'more while closed-loop detects and flags it
-  under the same fault.
+- **Live side-by-side (implemented, 2 lanes):** two controllers run in **parallel
+  worlds** (independent world + controller) on ONE shared clock and identical
+  stimulus (same tray injections + same faults), stacked as two line views with
+  per-lane status + a good/mis-filled tally. Outcomes diverge live — with a flaky
+  graham misfire, open-loop ships a graham-less s'more (✗) while closed-loop
+  retries and ships a complete one (✓). N>2 lanes and a compare timeline are
+  future extensions.
 
 Design notes: each controller drives its **own** world copy (no command
 conflict); the stimulus is a shared script so the comparison is fair and

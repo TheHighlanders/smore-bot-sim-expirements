@@ -357,7 +357,7 @@ def tick(io, mem):
                 t["status"] = "moving"; t["hold"] = -1
 
     if io.tunnel and io.tunnelEntry():
-        t = nearest(mem["tracks"], io.tunnel["entry"])
+        t = nearest(mem["tracks"], io.tunnel.entry)   # JS object -> attribute access
         if t and t["stage"] == io.tunnelStage and t["status"] == "moving":
             t["status"] = "toasting"; t["until"] = io.nowMs + 3800
     for t in mem["tracks"]:
@@ -1226,13 +1226,14 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     if (typeof mod.tick !== "function") throw new Error("no `function tick(io, mem)` defined");
     return mod;
   }
-  function studioLoad(){
+  async function studioLoad(){
     if (DBG.on) dbgStop();
     try {
-      const mod = studioCompile();
-      STUDIO.compiled = mod.tick;
+      if (STUDIO.lang==="python")   STUDIO.compiled = await studioCompilePython();
+      else if (STUDIO.lang==="cpp") throw new Error("C++ runs via in-browser compile (a later step) — use JavaScript or Python for now");
+      else                          STUDIO.compiled = studioCompile().tick;
       reset(); injectTray(); renderAll();          // reset() builds a JS-backed lane in studio view
-      studioStatus("running your JavaScript controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
+      studioStatus("running your "+(STUDIO.lang==="python"?"Python":"JavaScript")+" controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
       return true;
     } catch(err){ studioStatus("could not run: "+err.message, "err"); return false; }
   }
@@ -1243,7 +1244,7 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
   // every line, then let the user walk that recorded trace — a deterministic,
   // time-travel-friendly line debugger. Works inside helper functions too (no
   // generator constraints), and the deterministic sim makes each cycle repeatable.
-  const DBG = { on:false, engine:null, trace:[], pos:0, collecting:false, inp:null, snapOut:null, dec:[] };
+  const DBG = { on:false, engine:null, trace:[], pos:0, collecting:false, inp:null, snapOut:null, dec:[], primeFn:null };
   function dbgTrace(line){
     if (!DBG.collecting) return;
     const o = DBG.snapOut;
@@ -1307,32 +1308,90 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     worldStep(e.world, e.ctrl, e.ctrl.out, STEP);
     pushSample(e, DBG.inp, e.ctrl.out); tally(e);
     sim.t += STEP; sim.tick++;
-    renderAll(); dbgPrime();
+    renderAll(); DBG.primeFn();
   }
-  function dbgStart(){
+  async function dbgStart(){
     if (viewMode!=="studio") return;
-    let tickFn; try { tickFn = studioCompileTraced(); }
-    catch(err){ studioStatus("could not debug: "+err.message, "err"); return; }
-    STUDIO.compiled = tickFn;                      // reset() builds a JS lane with the traced tick
+    try {
+      if (STUDIO.lang==="python"){ STUDIO.compiled = await studioCompilePython(); DBG.primeFn = dbgPrimePy; }
+      else if (STUDIO.lang==="cpp"){ throw new Error("C++ step-debugging arrives with in-browser compile (a later step)"); }
+      else { STUDIO.compiled = studioCompileTraced(); DBG.primeFn = dbgPrime; }
+    } catch(err){ studioStatus("could not debug: "+err.message, "err"); return; }
     reset(); injectTray();
     sim.playing=false; $("playBtn").innerHTML="▶ Run";
     DBG.on=true; DBG.engine=engines[0]; dbgButtons(true);
-    dbgPrime(); renderAll();
+    DBG.primeFn(); renderAll();
   }
   function dbgStepLine(){ if(!DBG.on) return; DBG.pos++; if (DBG.pos < DBG.trace.length) dbgShow(); else dbgFinishTick(); }
   function dbgStepTick(){ if(!DBG.on) return; dbgFinishTick(); }
   function dbgStop(){ DBG.on=false; dbgClear(); dbgButtons(false); const v=$("dbgVars"); if(v) v.style.display="none"; studioStatus("debug stopped — edit and press 🐞 Debug or ▶ Run."); }
 
+  // ---- G2c: Python controllers via Pyodide (same contract + line stepping) ----
+  const PYODIDE_BASE = "https://cdn.jsdelivr.net/npm/pyodide@0.26.4/";
+  let PYO = null, _pyoLoading = null;
+  function loadPyo(){
+    if (PYO) return Promise.resolve(PYO);
+    if (!_pyoLoading) _pyoLoading = (async()=>{
+      studioStatus("loading Pyodide (Python runtime, ~10 MB) from CDN — first time only…");
+      await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=PYODIDE_BASE+"pyodide.js"; s.onload=res; s.onerror=()=>rej(new Error("pyodide.js")); document.head.appendChild(s); });
+      PYO = await loadPyodide({ indexURL: PYODIDE_BASE });
+      PYO.runPython("import copy, sys");
+      return PYO;
+    })();
+    return _pyoLoading;
+  }
+  // exec the student's Python, capture tick(); returns a JS controller (io,mem)->tracks
+  async function studioCompilePython(){
+    const py = await loadPyo();
+    py.globals.set("_src", STUDIO.editor.getValue());
+    py.runPython("_ns = {}\nexec(_src, _ns)\n_mem = {}");
+    if (!py.runPython("callable(_ns.get('tick'))")) throw new Error("no `def tick(io, mem)` defined");
+    const tickFn = py.runPython("_ns['tick']");      // PyProxy callable
+    return (io, _mem)=>{
+      const res = tickFn(io, py.globals.get("_mem"));
+      let tracks = [];
+      if (res && res.toJs){ tracks = res.toJs({ dict_converter: Object.fromEntries }); res.destroy(); }
+      return tracks;
+    };
+  }
+  // Python line-stepping via sys.settrace: run one cycle, record (line, mem) per line.
+  function dbgPrimePy(){
+    const e=DBG.engine, o=e.ctrl.out, py=PYO;
+    DBG.inp = senseInputs(e.world);
+    e.mem.__beltCmd = o.belt;
+    o.belt=0; for(let k=0;k<N_DISP;k++){ o.gate[k]=true; o.dispense[k]=false; } o.heater=false; o.tunnelGateOpen=true;
+    const io = makeIO(e.world, o, DBG.inp, e.mem);
+    py.globals.set("_io", io);
+    py.runPython([
+      "_dbg = []",
+      "def _tr(frame, event, arg):",
+      "    if event=='line' and frame.f_code.co_name=='tick':",
+      "        try: _dbg.append((frame.f_lineno, copy.deepcopy(dict(_mem))))",
+      "        except Exception: _dbg.append((frame.f_lineno, {}))",
+      "    return _tr",
+      "sys.settrace(_tr)",
+      "try: _ret = _ns['tick'](_io, _mem)",
+      "finally: sys.settrace(None)",
+    ].join("\n"));
+    const ret = py.globals.get("_ret");
+    e.ctrl.tracks = (ret && ret.toJs ? ret.toJs({dict_converter:Object.fromEntries}) : []).map(normTrack);
+    if (ret && ret.destroy) ret.destroy();
+    const raw = py.globals.get("_dbg").toJs({ dict_converter: Object.fromEntries }); // [[line, memObj], ...]
+    const outSnap = { belt:o.belt, gate:o.gate.slice(), dispense:o.dispense.slice(), heater:o.heater, tunnelGateOpen:o.tunnelGateOpen };
+    DBG.trace = raw.map(([line, mem])=>({ line, mem, out: outSnap }));
+    DBG.pos=0; dbgShow();
+  }
+
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
-  $("playBtn").addEventListener("click", ()=>{
-    if (viewMode==="studio" && !sim.playing){ if(!studioLoad()) return; }  // (re)compile current code, then play
+  $("playBtn").addEventListener("click", async ()=>{
+    if (viewMode==="studio" && !sim.playing){ if(!(await studioLoad())) return; }  // (re)compile current code, then play
     sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
-  $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run";
-    if (viewMode==="studio" && !(engines[0] && engines[0].mode==="js")){ if(!studioLoad()) return; }
+  $("stepBtn").addEventListener("click", async ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run";
+    if (viewMode==="studio" && !(engines[0] && engines[0].mode==="js")){ if(!(await studioLoad())) return; }
     stepOnce(); });
-  $("resetBtn").addEventListener("click", ()=>{
-    if (viewMode==="studio"){ studioLoad(); $("playBtn").innerHTML="▶ Run"; return; }
+  $("resetBtn").addEventListener("click", async ()=>{
+    if (viewMode==="studio"){ await studioLoad(); $("playBtn").innerHTML="▶ Run"; return; }
     reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
     buildFaultUI(); log(0,"reset","") ; renderAll(); });
   $("injectBtn").addEventListener("click", ()=>{ injectTray(); log(sim.t*1000,"operator injected a tray at belt entry",""); });

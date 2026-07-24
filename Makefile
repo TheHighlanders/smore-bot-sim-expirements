@@ -7,7 +7,7 @@ INCLUDES  = -Ishared -Ilib/P1AM_Sim
 
 WASI_SDK_DIR := .toolchains/wasi-sdk
 
-.PHONY: host-test chip chip-local test clean
+.PHONY: host-test chip chip-local test controller-test clean
 
 ## host-test: build+run the dependency-free host smoke test (needs only g++)
 host-test:
@@ -35,6 +35,10 @@ chip-local:
 ## test: the full Unity suite (needs PlatformIO)
 test:
 	pio test -e native
+
+## controller-test: host unit tests for the s'mores controller + subsystems
+controller-test:
+	$(MAKE) -C controller host-test
 
 clean:
 	rm -rf build

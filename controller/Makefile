@@ -10,8 +10,13 @@ SRC       = src/Controller.cpp
 REPO_ROOT := $(abspath ..)
 WASI      ?= $(REPO_ROOT)/.toolchains/wasi-sdk
 
-.PHONY: host-test test-subsystems test-controller wasm clean
+.PHONY: host-test test-subsystems test-controller wasm integration clean
 host-test: test-subsystems test-controller
+
+## integration: build controller.wasm, then drive it through the JS<->WASM
+## boundary against a simulated world (needs node) — the visualizer's path.
+integration: wasm
+	node test/integration.mjs
 
 test-subsystems:
 	@mkdir -p build

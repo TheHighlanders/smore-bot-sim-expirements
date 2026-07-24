@@ -25,6 +25,18 @@ jobs:
       - name: Unity native tests
         run: pio test -e native
 
+  # ---- S'mores controller: host tests + WASM integration test ----
+  controller:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host unit tests (subsystems + controller logic)
+        run: make controller-test
+      - name: Fetch wasi-sdk (GitHub runners have no TLS proxy)
+        run: ./tools/get-wasi-sdk.sh
+      - name: WASM integration test (real controller.wasm ↔ JS world)
+        run: make -C controller integration
+
   # ---- Build the base-controller custom chip -> WASM ----
   build-chip:
     runs-on: ubuntu-latest

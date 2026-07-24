@@ -42,9 +42,11 @@ controller/
 ## Build & test
 
 ```bash
-make -C controller host-test   # subsystem + controller logic tests (g++)
-make -C controller wasm        # -> build/controller.wasm (needs the repo-local
-                               #    wasi-sdk from `make chip-local` at repo root)
+make -C controller host-test    # subsystem + controller logic tests (g++)
+make -C controller wasm         # -> build/controller.wasm (needs the repo-local
+                                #    wasi-sdk from `make chip-local` at repo root)
+make -C controller integration  # build the wasm + drive it through the JS<->WASM
+                                # boundary against a simulated world (needs node)
 ```
 `make controller-test` from the repo root runs the host tests too.
 
@@ -55,6 +57,11 @@ make -C controller wasm        # -> build/controller.wasm (needs the repo-local
   graham misfire ships graham-less (oblivious); closed-loop retries and recovers.
 - WASM: builds to a valid module exporting `init`, `tick`, `inputs_ptr`,
   `outputs_ptr`, `track_count`, `track_field`.
+- **Integration** (`test/integration.mjs`): the compiled `controller.wasm` is
+  instantiated and driven across the WASM↔JS boundary against a JS world — the
+  visualizer's exact path. All cases pass: open-loop completes a good s'more;
+  open-loop + flaky graham ships graham-less while believing it placed it;
+  closed-loop retries and recovers.
 
 ## Next
 

@@ -88,6 +88,8 @@
 
   .lineview .canvas-wrap { padding:8px 8px 4px; }
   canvas#line { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
+  .tl-wrap { padding:8px 12px 12px; }
+  canvas#tl { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
 
   .legend { display:flex; flex-wrap:wrap; gap:14px; padding:8px 16px 14px; }
   .legend span { display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--muted); font-family:var(--mono); }
@@ -245,6 +247,12 @@
     </aside>
   </main>
 
+  <section class="panel timeline">
+    <div class="panel-hd"><h2>Signal history</h2><span class="hint">inputs &amp; outputs over time — whole run in one view</span></div>
+    <div class="tl-wrap"><canvas id="tl" width="1600" height="214" role="img"
+      aria-label="Timeline of controller input and output signals over the whole run"></canvas></div>
+  </section>
+
   <footer class="dock">
     <div class="group">
       <button class="btn primary" id="playBtn" aria-label="Play or pause">▶ Run</button>
@@ -310,6 +318,7 @@
     ctrl  = makeController();
     sim   = { t:0, tick:0, playing:false, speed:1, acc:0 };
     logLines.length = 0;
+    history.length = 0;
     renderAll();
     drawLog();
   }
@@ -487,6 +496,15 @@
     return { sense, tunnel_entry, tunnel_exit, tunnel_temp:world.temp, run:true, t:sim.t*1000 };
   }
 
+  // ---- signal history for the timeline (AdvantageScope-style) ----
+  const history=[]; const HIST_MAX=9000;
+  function pushSample(inp,out){
+    history.push({ t:sim.t, s:[inp.sense[0],inp.sense[1],inp.sense[2]], te:inp.tunnel_entry, tx:inp.tunnel_exit,
+                   temp:world.temp, belt:out.belt, g:[out.gate[0],out.gate[1],out.gate[2]],
+                   d:[out.dispense[0],out.dispense[1],out.dispense[2]], h:out.heater });
+    if (history.length>HIST_MAX) history.shift();
+  }
+
   // ---- fixed-step advance (deterministic) ----
   const STEP = 0.02; // 20ms control period
   function advance(realDt){
@@ -496,11 +514,12 @@
       const inp = senseInputs();
       const out = ctrl.tick(inp, STEP);
       worldStep(out, STEP);
+      pushSample(inp, out);
     }
   }
   function stepOnce(){
     sim.t += STEP; sim.tick++;
-    const inp = senseInputs(); const out = ctrl.tick(inp, STEP); worldStep(out, STEP);
+    const inp = senseInputs(); const out = ctrl.tick(inp, STEP); worldStep(out, STEP); pushSample(inp, out);
     renderAll();
   }
 
@@ -635,12 +654,65 @@
   function lerpColor(a,b,t){ const pa=hx(a),pb=hx(b); return `rgb(${Math.round(pa[0]+(pb[0]-pa[0])*t)},${Math.round(pa[1]+(pb[1]-pa[1])*t)},${Math.round(pa[2]+(pb[2]-pa[2])*t)})`; }
   function hx(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
 
+  // ---- timeline (signal history, AdvantageScope-style) ----
+  const tlc=document.getElementById("tl"); const tlx=tlc.getContext("2d");
+  let TW=1600, TH=214, TDPR=1;
+  function fitTL(){ const w=tlc.clientWidth||900; TDPR=Math.min(2,window.devicePixelRatio||1); TW=w; TH=214;
+    tlc.width=Math.round(TW*TDPR); tlc.height=Math.round(TH*TDPR); tlx.setTransform(TDPR,0,0,TDPR,0,0); }
+  function rgba(hex,a){ const p=hx(hex); return `rgba(${p[0]},${p[1]},${p[2]},${a})`; }
+  // gates shown as CLOSED=high (the informative pulse); sensors/heater raw.
+  const TL_LANES=[
+    {l:"sense·G", g:s=>s.s[0],  c:C.good }, {l:"sense·C", g:s=>s.s[1],  c:C.good }, {l:"sense·M", g:s=>s.s[2], c:C.good},
+    {l:"tun·in",  g:s=>s.te,    c:C.good }, {l:"tun·out", g:s=>s.tx,    c:C.good },
+    {l:"gate·G ↓",g:s=>!s.g[0], c:C.teal }, {l:"gate·C ↓",g:s=>!s.g[1], c:C.teal }, {l:"gate·M ↓",g:s=>!s.g[2],c:C.teal},
+    {l:"heater",  g:s=>s.h,     c:C.ember}
+  ];
+  function drawTimeline(){
+    tlx.clearRect(0,0,TW,TH);
+    const LG=68, RG=10, top=6;
+    if (!history.length){ tlx.fillStyle=C.faint; tlx.font="11px "+MONO; tlx.textAlign="left"; tlx.fillText("press Run — signals trace here", LG, TH/2); return; }
+    const t0=history[0].t, t1=Math.max(sim.t, t0+0.5);
+    const xFor=t=>LG + (t-t0)/(t1-t0)*(TW-LG-RG);
+    // time gridlines + labels
+    const span=t1-t0, gstep = span>40?10:(span>16?5:(span>6?2:1));
+    tlx.font="9px "+MONO; tlx.lineWidth=1;
+    for (let tt=Math.ceil(t0/gstep)*gstep; tt<=t1+1e-3; tt+=gstep){ const x=xFor(tt);
+      tlx.strokeStyle=rgba(C.faint,.22); tlx.beginPath(); tlx.moveTo(x,top); tlx.lineTo(x,TH-12); tlx.stroke();
+      tlx.fillStyle=C.faint; tlx.textAlign="center"; tlx.fillText(tt.toFixed(0)+"s", x, TH-2); }
+    // analog strip: belt (0-130) + temp (0-220)
+    const AH=40, AY=top;
+    tlx.strokeStyle=rgba(C.faint,.35); tlx.strokeRect(LG,AY,TW-LG-RG,AH);
+    tlx.textAlign="right"; tlx.fillStyle=C.teal; tlx.fillText("belt",LG-6,AY+13); tlx.fillStyle=C.ember; tlx.fillText("temp",LG-6,AY+27);
+    const trace=(get,max,col)=>{ tlx.strokeStyle=col; tlx.lineWidth=1.4; tlx.beginPath();
+      for(let i=0;i<history.length;i++){ const s=history[i]; const x=xFor(s.t); const y=AY+AH-2-(Math.min(max,get(s))/max)*(AH-4); i?tlx.lineTo(x,y):tlx.moveTo(x,y);} tlx.stroke(); };
+    trace(s=>s.belt,130,C.teal); trace(s=>s.temp,220,C.ember);
+    // digital lanes (run-length bands)
+    const rows=TL_LANES.length+1, DY=AY+AH+9, laneH=Math.max(11,(TH-DY-14)/rows);
+    const band=(idx,label,get,col)=>{ const y=DY+idx*laneH;
+      tlx.fillStyle=C.muted; tlx.font="9px "+MONO; tlx.textAlign="right"; tlx.fillText(label,LG-6,y+laneH*0.7);
+      tlx.strokeStyle=rgba(C.faint,.16); tlx.lineWidth=1; tlx.beginPath(); tlx.moveTo(LG,y+laneH-1); tlx.lineTo(TW-RG,y+laneH-1); tlx.stroke();
+      tlx.fillStyle=rgba(col,.5); let rs=null;
+      for(let i=0;i<history.length;i++){ const v=get(history[i]);
+        if(v&&rs===null) rs=history[i].t;
+        if(rs!==null&&(!v||i===history.length-1)){ tlx.fillRect(xFor(rs), y+2, Math.max(1.2,xFor(history[i].t)-xFor(rs)), laneH-4); rs=null; } }
+    };
+    TL_LANES.forEach((L,i)=>band(i,L.l,L.g,L.c));
+    // dispense pulses, colored per station
+    const dy=DY+TL_LANES.length*laneH;
+    tlx.fillStyle=C.muted; tlx.textAlign="right"; tlx.font="9px "+MONO; tlx.fillText("dispense",LG-6,dy+laneH*0.7);
+    tlx.strokeStyle=rgba(C.faint,.16); tlx.beginPath(); tlx.moveTo(LG,dy+laneH-1); tlx.lineTo(TW-RG,dy+laneH-1); tlx.stroke();
+    for(let i=1;i<history.length;i++) for(let k=0;k<3;k++){ if(history[i].d[k]&&!history[i-1].d[k]){ tlx.strokeStyle=STATIONS[k].color; tlx.lineWidth=2.5; const x=xFor(history[i].t); tlx.beginPath(); tlx.moveTo(x,dy+3); tlx.lineTo(x,dy+laneH-2); tlx.stroke(); } }
+    // now cursor
+    tlx.strokeStyle=C.teal; tlx.lineWidth=1; tlx.beginPath(); tlx.moveTo(xFor(t1),top); tlx.lineTo(xFor(t1),TH-12); tlx.stroke();
+  }
+
   // ---- inspector / DOM render ----
   let liveInputs=null;
   const $=id=>document.getElementById(id);
   function renderAll(){
     liveInputs = senseInputs();
     drawLine();
+    drawTimeline();
     // topbar
     $("tickVal").textContent = sim.tick;
     $("clockVal").textContent = sim.t.toFixed(1)+"s";
@@ -726,10 +798,10 @@
   $("dblCBtn").addEventListener("click", e=>{ const on=world.disp.choc!=="double"; world.disp.choc=on?"double":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
   $("blindBtn").addEventListener("click", e=>{ world.blindMarsh=!world.blindMarsh; e.currentTarget.setAttribute("aria-pressed",world.blindMarsh); log(sim.t*1000,"marshmallow sensor "+(world.blindMarsh?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
   $("jamBtn").addEventListener("click", e=>{ world.jamChoc=!world.jamChoc; e.currentTarget.setAttribute("aria-pressed",world.jamChoc); log(sim.t*1000,"chocolate gate "+(world.jamChoc?"JAMMED shut":"freed"),"warn"); });
-  window.addEventListener("resize", ()=>{ fitCanvas(); renderAll(); });
+  window.addEventListener("resize", ()=>{ fitCanvas(); fitTL(); renderAll(); });
 
   // ---- boot: prime with one tray (demo one; architected for many) ----
-  fitCanvas(); reset(); injectTray();
+  fitCanvas(); fitTL(); reset(); injectTray();
   log(0,"line ready — press Run","");
   renderAll(); drawLog();
   requestAnimationFrame(frame);

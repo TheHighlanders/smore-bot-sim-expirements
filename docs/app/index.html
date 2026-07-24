@@ -166,6 +166,25 @@
   .app[data-view="single"]  .compare-only { display:none; }
   .compare-view { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
   @media (max-width:900px){ .compare-view { grid-template-columns:1fr; } }
+
+  /* ---------- studio view (write your own controller) ---------- */
+  .studio-only { display:none; }
+  .app[data-view="studio"] .studio-only { display:flex; }
+  .app[data-view="studio"] .compare-only,
+  .app[data-view="studio"] .single-only { display:none; }
+  .studio { flex-direction:column; gap:0; padding:0; overflow:hidden; }
+  .studio-hd { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--hair); flex-wrap:wrap; }
+  .lang-tabs { display:flex; gap:4px; }
+  .lang-tab { font:600 11px/1 var(--mono); letter-spacing:.04em; padding:7px 12px; border:1px solid var(--hair); border-radius:6px 6px 0 0;
+    background:var(--panel-2); color:var(--muted); cursor:pointer; }
+  .lang-tab.active { color:var(--teal); border-color:var(--teal); background:rgba(51,188,203,.08); }
+  .lang-tab:disabled { opacity:.45; cursor:not-allowed; }
+  .studio-hd .spacer { flex:1; }
+  #editor { width:100%; height:420px; }
+  .studio-status { padding:8px 14px; border-top:1px solid var(--hair); font:11px/1.5 var(--mono); color:var(--muted); min-height:20px; }
+  .studio-status.ok { color:var(--good); }
+  .studio-status.err { color:var(--crit); }
+  .studio-note { font:11px/1.5 var(--mono); color:var(--muted-2); }
   .lane-hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
     padding:9px 14px; border-bottom:1px solid var(--hair-soft); }
   .lane-hd .lane-name { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:.03em; color:var(--text); }
@@ -216,6 +235,164 @@
       <div class="stat"><span class="k">Done</span><span class="v" id="doneVal">0</span></div>
     </div>
   </header>
+
+  <section class="panel studio studio-only">
+    <div class="studio-hd">
+      <div class="lang-tabs" id="langTabs">
+        <button class="lang-tab active" data-lang="js">JavaScript</button>
+        <button class="lang-tab" data-lang="python">Python</button>
+        <button class="lang-tab" data-lang="cpp">C++</button>
+      </div>
+      <span class="studio-note" id="studioLang">write a controller for the <b id="studioLayoutName">…</b> layout</span>
+      <span class="spacer"></span>
+      <button class="btn" id="checkBtn" title="Validate this controller against the active layout (the runtime equivalent of the C++ compile-time check)">✓ Check vs layout</button>
+      <button class="btn" id="revertBtn" title="Restore the starter controller">↺ Revert</button>
+    </div>
+    <div id="editor"></div>
+    <div class="studio-status" id="studioStatus">Monaco loading…</div>
+  </section>
+
+  <!-- Starter controllers (inert; read as text). All three target the same §4
+       contract via a layout-aware `io` API and declare `requires` so the runtime
+       can check compatibility against the active layout (LAYOUTS.md ER-5). -->
+  <script type="text/plain" id="starter-js">// Open-loop controller (JavaScript). A controller is a BOUND PAIR with its
+// layout: declare what you need, and the runtime checks it before running —
+// the JS/Python equivalent of the C++ compile-time contract check.
+const requires = { dispensers: ["g1", "c1", "m1"], tunnel: true };
+
+// tick() runs once per control cycle. `mem` persists across ticks (keep your
+// tray tracking here); `io` is your window on the line (API note below editor).
+function tick(io, mem) {
+  if (!mem.tracks) { mem.tracks = []; mem.lastSense = io.dispensers.map(() => false); }
+  io.belt(io.run ? io.nominal : 0);
+
+  // dead-reckon every moving tray between sensors
+  for (const t of mem.tracks) if (t.status === "moving") t.estPos += io.beltCmd * io.dt;
+
+  // at each dispenser: on a sensor RISING edge, snap position, hold + dispense
+  for (const d of io.dispensers) {
+    const rise = io.sense(d.index) && !mem.lastSense[d.index];
+    if (rise) {
+      let t = nearest(mem.tracks, d.pos);
+      if (!t && d.index === 0) { t = { id: mem.tracks.length + 1, estPos: d.pos, stage: 0, status: "moving", hold: -1, placed: io.dispensers.map(() => 0) }; mem.tracks.push(t); io.log("tray #" + t.id + " detected", "evt"); }
+      if (t) { t.estPos = d.pos; if (t.stage === d.stage) { t.status = "held"; t.hold = d.index; t.until = io.nowMs + 650; } }
+    }
+    mem.lastSense[d.index] = io.sense(d.index);
+  }
+
+  // service holds: keep the dispenser running, then (OPEN-LOOP) assume it worked
+  for (const t of mem.tracks) {
+    if (t.status === "held") {
+      io.gate(t.hold, false); io.dispense(t.hold, true);
+      if (io.nowMs >= t.until) { t.placed[t.hold] = 1; t.stage = io.dispensers[t.hold].stage + 1; t.status = "moving"; t.hold = -1; }
+    }
+  }
+
+  // tunnel: dwell to toast, release; a tray is done once every stage is complete
+  if (io.tunnel && io.tunnelEntry()) { const t = nearest(mem.tracks, io.tunnel.entry); if (t && t.stage === io.tunnelStage && t.status === "moving") { t.status = "toasting"; t.until = io.nowMs + 3800; } }
+  for (const t of mem.tracks) if (t.status === "toasting" && io.nowMs >= t.until) { t.stage = io.tunnelStage + 1; t.status = "moving"; }
+  io.heater(mem.tracks.some(t => t.status === "toasting"));
+  io.tunnelGate(!mem.tracks.some(t => t.status === "toasting"));
+  for (const t of mem.tracks) if (t.status === "moving" && t.stage >= io.nStages) { t.status = "done"; io.log("s'more #" + t.id + " complete", "evt"); }
+
+  return mem.tracks;   // the visualizer renders these
+}
+function nearest(tracks, pos) { let b = null, bd = 1e9; for (const t of tracks) { if (t.status === "done") continue; const d = Math.abs(t.estPos - pos); if (d < bd && d < 120) { b = t; bd = d; } } return b; }
+</script>
+
+  <script type="text/plain" id="starter-python"># Open-loop controller (Python, runs via Pyodide). Same contract as the JS
+# version. `requires` is checked against the active layout before running.
+requires = { "dispensers": ["g1", "c1", "m1"], "tunnel": True }
+
+def nearest(tracks, pos):
+    best, bd = None, 1e9
+    for t in tracks:
+        if t["status"] == "done": continue
+        d = abs(t["estPos"] - pos)
+        if d < bd and d < 120: best, bd = t, d
+    return best
+
+# tick() runs once per control cycle. `mem` is a dict that persists across ticks.
+def tick(io, mem):
+    if "tracks" not in mem:
+        mem["tracks"] = []; mem["lastSense"] = [False] * len(io.dispensers)
+    io.belt(io.nominal if io.run else 0)
+
+    for t in mem["tracks"]:
+        if t["status"] == "moving": t["estPos"] += io.beltCmd * io.dt
+
+    for d in io.dispensers:
+        rise = io.sense(d.index) and not mem["lastSense"][d.index]
+        if rise:
+            t = nearest(mem["tracks"], d.pos)
+            if t is None and d.index == 0:
+                t = {"id": len(mem["tracks"]) + 1, "estPos": d.pos, "stage": 0,
+                     "status": "moving", "hold": -1, "placed": [0] * len(io.dispensers)}
+                mem["tracks"].append(t); io.log("tray #%d detected" % t["id"], "evt")
+            if t:
+                t["estPos"] = d.pos
+                if t["stage"] == d.stage:
+                    t["status"] = "held"; t["hold"] = d.index; t["until"] = io.nowMs + 650
+        mem["lastSense"][d.index] = io.sense(d.index)
+
+    for t in mem["tracks"]:
+        if t["status"] == "held":
+            io.gate(t["hold"], False); io.dispense(t["hold"], True)
+            if io.nowMs >= t["until"]:
+                t["placed"][t["hold"]] = 1
+                t["stage"] = io.dispensers[t["hold"]].stage + 1
+                t["status"] = "moving"; t["hold"] = -1
+
+    if io.tunnel and io.tunnelEntry():
+        t = nearest(mem["tracks"], io.tunnel["entry"])
+        if t and t["stage"] == io.tunnelStage and t["status"] == "moving":
+            t["status"] = "toasting"; t["until"] = io.nowMs + 3800
+    for t in mem["tracks"]:
+        if t["status"] == "toasting" and io.nowMs >= t["until"]:
+            t["stage"] = io.tunnelStage + 1; t["status"] = "moving"
+    toasting = any(t["status"] == "toasting" for t in mem["tracks"])
+    io.heater(toasting); io.tunnelGate(not toasting)
+    for t in mem["tracks"]:
+        if t["status"] == "moving" and t["stage"] >= io.nStages:
+            t["status"] = "done"; io.log("s'more #%d complete" % t["id"], "evt")
+
+    return mem["tracks"]
+</script>
+
+  <script type="text/plain" id="starter-cpp">// Open-loop controller (C++). This is the SAME code shape as the shipped
+// controller: it #includes the layout-GENERATED contract, so referencing a
+// module the layout lacks is a COMPILE error (the strongest bound-pair check).
+// Compiled to WebAssembly in your browser (no server) and hot-swapped in.
+#include "smores/generated/Layout.h"
+#include "smores/generated/Contract.h"
+using namespace smores;
+
+// A trace callback is injected at each source line so the debugger can step you
+// through this exact file line-by-line (host_trace is provided by the runtime).
+extern "C" void host_trace(int line);
+
+struct Track { int id; float est; int stage; int status; int hold; int placed[layout::N_DISP]; unsigned until; };
+
+// Fill Outputs from Inputs each tick. Your tray tracking is the static state.
+extern "C" void tick(const Inputs& in, Outputs& out) {
+    static Track tracks[8]; static int nTracks = 0;
+    static bool lastSense[layout::N_DISP] = {};
+    static unsigned lastNow = 0;
+    float dt = (in.now_ms - lastNow) / 1000.0f; lastNow = in.now_ms;
+
+    out.belt_speed = in.run ? layout::NOMINAL_SPEED : 0.f;
+    for (int i = 0; i < nTracks; i++) if (tracks[i].status == 0) tracks[i].est += out.belt_speed * dt;
+
+    for (int k = 0; k < layout::N_DISP; k++) {
+        bool rise = in.sense[k] && !lastSense[k];
+        // ... snap to layout::DISP[k].pos_mm, hold when stage == DISP[k].stage,
+        //     run out.dispense[k], and (open-loop) assume it placed. Your logic!
+        lastSense[k] = in.sense[k];
+    }
+    // tunnel: hold to toast via out.tunnel_gate_open + out.heater, then release;
+    // done once stage >= layout::N_STAGES (the post-tunnel cap counts too).
+}
+</script>
 
   <main class="stage single-only">
     <section class="panel lineview">
@@ -305,6 +482,7 @@
       <span class="glabel">View</span>
       <button class="btn ctrl-sel ctrl-active" id="viewSingle" title="One controller, full instrumentation">Single</button>
       <button class="btn ctrl-sel" id="viewCompare" title="Two controllers side by side on identical stimulus">Compare A/B</button>
+      <button class="btn ctrl-sel" id="viewStudio" title="Write your own controller (JavaScript / Python / C++)">✎ Studio</button>
     </div>
     <div class="group">
       <button class="btn primary" id="playBtn" aria-label="Play or pause">▶ Run</button>
@@ -395,6 +573,7 @@
     OUT_OFF = Object.fromEntries(meta.offsets.outputs.fields.map(f=>[f.name,f.offset]));
     currentLayout = name;
     buildTimelineLanes(); buildIORows(); buildFaultUI();
+    const sln=document.getElementById("studioLayoutName"); if(sln) sln.textContent = meta.title || name;
   }
 
   // ---- engine: one self-contained "lane" = independent world + controller ----
@@ -930,6 +1109,60 @@
     }
   }
 
+  // =================== STUDIO (write your own controller) ===================
+  const STUDIO = { lang:"js", editor:null, ready:false, models:{} };
+  const STARTER = lang => (document.getElementById("starter-"+lang).textContent||"").replace(/^\n/,"");
+  const MONACO_LANG = { js:"javascript", python:"python", cpp:"cpp" };
+  const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min";
+  function studioStatus(msg, cls){ const el=$("studioStatus"); if(!el)return; el.textContent=msg; el.className="studio-status"+(cls?" "+cls:""); }
+
+  async function initMonaco(){
+    if (STUDIO.ready) return;
+    studioStatus("loading Monaco from CDN…");
+    // Monaco workers must be same-origin; bootstrap the CDN worker via a data: URL.
+    window.MonacoEnvironment = { getWorkerUrl: () =>
+      "data:text/javascript;charset=utf-8," + encodeURIComponent(
+        "self.MonacoEnvironment={baseUrl:'"+MONACO_BASE+"/'};importScripts('"+MONACO_BASE+"/vs/base/worker/workerMain.js');") };
+    await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=MONACO_BASE+"/vs/loader.js"; s.onload=res; s.onerror=()=>rej(new Error("Monaco loader.js")); document.head.appendChild(s); });
+    await new Promise(res=>{ require.config({ paths:{ vs: MONACO_BASE+"/vs" }}); require(["vs/editor/editor.main"], res); });
+    for (const lang of ["js","python","cpp"]) STUDIO.models[lang] = monaco.editor.createModel(STARTER(lang), MONACO_LANG[lang]);
+    STUDIO.editor = monaco.editor.create($("editor"), { model:STUDIO.models[STUDIO.lang], theme:"vs-dark", fontSize:12.5, minimap:{enabled:false}, automaticLayout:true, scrollBeyondLastLine:false, padding:{top:10} });
+    STUDIO.ready = true;
+    studioStatus("editor ready — write a controller, then “Check vs layout”. (Running & step-debugging: coming next.)");
+  }
+  function setStudioLang(lang){
+    STUDIO.lang = lang;
+    document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.lang===lang));
+    if (STUDIO.editor) STUDIO.editor.setModel(STUDIO.models[lang]);
+    studioStatus(lang==="cpp" ? "C++ is checked at COMPILE time against the layout-generated contract (strongest bound-pair check)."
+                              : "declare `requires` — it's validated against the active layout before the controller runs.");
+  }
+  // ER-5: the runtime layout-compatibility check for scripted controllers — the
+  // equivalent of the C++ compile-time contract check, via declared requirements.
+  function checkVsLayout(){
+    if (!STUDIO.editor){ studioStatus("editor not ready yet", "err"); return; }
+    const src = STUDIO.editor.getValue();
+    const need = { dispensers:[], tunnel:null };
+    const mDisp = src.match(/dispensers"?\s*[:=]\s*\[([^\]]*)\]/);
+    if (mDisp) need.dispensers = (mDisp[1].match(/["']([^"']+)["']/g)||[]).map(s=>s.replace(/["']/g,""));
+    const mTun = src.match(/tunnel"?\s*[:=]\s*(true|True|false|False)/); if (mTun) need.tunnel = /true/i.test(mTun[1]);
+    const have = new Set(LAYOUT.dispensers.map(d=>d.id));
+    const problems = [];
+    const missing = need.dispensers.filter(id=>!have.has(id));
+    if (missing.length) problems.push("layout '"+LAYOUT.name+"' has no dispenser(s): "+missing.join(", "));
+    if (need.tunnel===true && !LAYOUT.tunnel) problems.push("controller needs a tunnel; layout '"+LAYOUT.name+"' has none");
+    const extra = LAYOUT.dispensers.map(d=>d.id).filter(id=>need.dispensers.length && !need.dispensers.includes(id));
+    if (STUDIO.lang==="cpp"){
+      studioStatus(problems.length
+        ? "⚠ "+problems.join(" · ")+"  — and C++ would FAIL TO COMPILE against this layout."
+        : "✓ needs match '"+LAYOUT.name+"'. C++ additionally won't compile if it names a module the layout lacks.", problems.length?"err":"ok");
+      return;
+    }
+    if (problems.length) studioStatus("✗ incompatible — "+problems.join(" · "), "err");
+    else studioStatus("✓ compatible with '"+LAYOUT.name+"' ("+LAYOUT.dispensers.length+" dispensers"+(LAYOUT.tunnel?" + tunnel":"")+")"
+      + (extra.length? " · note: layout also has "+extra.join(", ")+" your controller doesn't mention" : "") + ".", "ok");
+  }
+
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
   $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
@@ -957,10 +1190,20 @@
     viewMode=mode; APP.dataset.view=mode; $("playBtn").innerHTML="▶ Run";
     $("viewSingle").classList.toggle("ctrl-active", mode==="single");
     $("viewCompare").classList.toggle("ctrl-active", mode==="compare");
+    $("viewStudio").classList.toggle("ctrl-active", mode==="studio");
+    if (mode==="studio"){
+      $("studioLayoutName").textContent = LAYOUT.title || LAYOUT.name;
+      initMonaco().catch(e=>studioStatus("Monaco failed to load: "+e.message, "err"));
+      return;                       // studio doesn't touch the sim engines (yet)
+    }
     fitAll(); reset(); injectTray(); renderAll();
   }
   $("viewSingle").addEventListener("click", ()=>setView("single"));
   $("viewCompare").addEventListener("click", ()=>setView("compare"));
+  $("viewStudio").addEventListener("click", ()=>setView("studio"));
+  document.querySelectorAll(".lang-tab").forEach(b=>b.addEventListener("click", ()=>setStudioLang(b.dataset.lang)));
+  $("checkBtn").addEventListener("click", checkVsLayout);
+  $("revertBtn").addEventListener("click", ()=>{ if(STUDIO.editor){ STUDIO.editor.setValue(STARTER(STUDIO.lang)); studioStatus("reverted to the starter controller"); } });
   window.addEventListener("resize", ()=>{ fitAll(); renderAll(); });
 
   // ---- boot ----

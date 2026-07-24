@@ -159,15 +159,19 @@
   /* ---------- compare view (side-by-side A/B) ---------- */
   .app[data-view="compare"] .single-only { display:none; }
   .app[data-view="single"]  .compare-only { display:none; }
-  .compare-view { display:flex; flex-direction:column; gap:14px; }
-  .lane-hd { display:flex; align-items:center; justify-content:space-between; gap:12px;
+  .compare-view { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
+  @media (max-width:900px){ .compare-view { grid-template-columns:1fr; } }
+  .lane-hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
     padding:9px 14px; border-bottom:1px solid var(--hair-soft); }
   .lane-hd .lane-name { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:.03em; color:var(--text); }
-  .lane-tally { display:flex; gap:14px; font-family:var(--mono); font-size:12.5px; font-variant-numeric:tabular-nums; }
+  .lane-tally { display:flex; gap:12px; font-family:var(--mono); font-size:11.5px; font-variant-numeric:tabular-nums; }
   .lane-tally .ok  { color:var(--good); }
   .lane-tally .bad { color:var(--crit); }
-  .lane-canvas-wrap { padding:8px; }
+  .lane-canvas-wrap { padding:8px 8px 2px; }
   canvas.lane-canvas { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
+  .lane-sub { font-size:9.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--muted-2);
+    padding:8px 14px 2px; }
+  .lane-log { height:150px; overflow:auto; padding:6px 0 8px; }
   button.btn .ic { width:12px; height:12px; }
 
   input[type=range] { -webkit-appearance:none; appearance:none; height:4px; width:130px; border-radius:3px;
@@ -268,21 +272,29 @@
   </section>
 
   <section class="compare-view compare-only">
-    <section class="panel">
+    <section class="panel lane-col">
       <div class="lane-hd">
         <span class="lane-name" id="lane0-name">Open-loop</span>
         <span class="lane-tally"><span class="ok">✓ good <b id="lane0-good">0</b></span><span class="bad">✗ mis-filled <b id="lane0-bad">0</b></span></span>
         <span class="pill stop" id="lane0-state"><span class="dot"></span>PAUSED</span>
       </div>
-      <div class="lane-canvas-wrap"><canvas id="laneA" class="lane-canvas" width="1600" height="480" role="img" aria-label="Lane A line view"></canvas></div>
+      <div class="lane-canvas-wrap"><canvas id="laneA" class="lane-canvas" width="1200" height="620" role="img" aria-label="Lane A line view"></canvas></div>
+      <div class="lane-sub">Signal history</div>
+      <div class="lane-canvas-wrap"><canvas id="laneA-tl" class="lane-canvas" width="1200" height="400" role="img" aria-label="Lane A signal history"></canvas></div>
+      <div class="lane-sub">Decision log</div>
+      <div class="log lane-log" id="lane0-log"></div>
     </section>
-    <section class="panel">
+    <section class="panel lane-col">
       <div class="lane-hd">
         <span class="lane-name" id="lane1-name">Closed-loop</span>
         <span class="lane-tally"><span class="ok">✓ good <b id="lane1-good">0</b></span><span class="bad">✗ mis-filled <b id="lane1-bad">0</b></span></span>
         <span class="pill stop" id="lane1-state"><span class="dot"></span>PAUSED</span>
       </div>
-      <div class="lane-canvas-wrap"><canvas id="laneB" class="lane-canvas" width="1600" height="480" role="img" aria-label="Lane B line view"></canvas></div>
+      <div class="lane-canvas-wrap"><canvas id="laneB" class="lane-canvas" width="1200" height="620" role="img" aria-label="Lane B line view"></canvas></div>
+      <div class="lane-sub">Signal history</div>
+      <div class="lane-canvas-wrap"><canvas id="laneB-tl" class="lane-canvas" width="1200" height="400" role="img" aria-label="Lane B signal history"></canvas></div>
+      <div class="lane-sub">Decision log</div>
+      <div class="log lane-log" id="lane1-log"></div>
     </section>
   </section>
 
@@ -350,8 +362,10 @@
   const ACTUAL_SLIP   = 0.965;    // world moves a bit slower -> estimate drifts high
   const SENSE_WIN = 22;           // mm: sensor trips within this of its point
   const TRAY_W = 64;
-  const DISPENSE_MS = 650;        // gate held closed to dispense + settle
-  const TOAST_MS = 3800;          // dwell in tunnel
+  const DISPENSE_MS = 650;        // controller keeps the dispenser output ON this long
+  const DROP_AT     = 450;        // ms of continuous output before a unit actually drops
+  const TOAST_MS = 3800;          // controller's tunnel dwell time
+  const E_TARGET = 420;           // heat units a marshmallow must accumulate to toast
 
   // ---- engine: one self-contained "lane" = independent world + controller ----
   // Compare mode runs two engines in parallel on ONE shared clock and IDENTICAL
@@ -424,40 +438,44 @@
               tr.estPos = STATIONS[k].pos;           // snap (correct drift)
               if (tr.stage === k){
                 o.gate[k]=false; tr.status="held"; tr.hold=k; tr.retries=0; tr.dispenseAt=inp.t+DISPENSE_MS;
-                o.dispense[k]=true;
-                if (this.mode==="open") tr.placed[k]=1;   // BELIEVES the pulse worked
-                log(inp.t, "hold #"+tr.id+" @ "+STATIONS[k].name+" (drift "+corr.toFixed(0)+"mm corrected)", "evt");
+                log(inp.t, "saw #"+tr.id+" at "+STATIONS[k].name+" (drift "+corr.toFixed(0)+"mm) — closing gate, running "+STATIONS[k].key+" dispenser", "evt");
               }
             }
           }
         }
         this.lastSense = inp.sense.slice();
 
-        // 3) service held trays; closed-loop verifies via dispense_confirm
+        // 3) service held trays after the dispenser has run long enough
         for (const tr of this.tracks){
           if (tr.status==="held" && inp.t>=tr.dispenseAt){
-            const k = tr.hold;
+            const k = tr.hold, key=STATIONS[k].key;
             if (this.mode==="closed"){
-              const c = inp.confirm[k];               // units the confirm sensor actually saw drop
-              if (c===0 && tr.retries<3){              // miss -> retry (stay held)
-                tr.retries++; o.dispense[k]=true; tr.dispenseAt=inp.t+DISPENSE_MS;
-                log(inp.t, "no drop confirmed @ "+STATIONS[k].name+" — retry "+tr.retries+" (#"+tr.id+")", "warn");
+              const c = inp.confirm[k];               // units the drop-confirm sensor counted
+              if (c===0 && tr.retries<3){              // nothing dropped -> keep running (retry)
+                tr.retries++; tr.dispenseAt=inp.t+DISPENSE_MS;
+                log(inp.t, "no drop confirmed for #"+tr.id+" at "+STATIONS[k].name+" — extending dispenser run (retry "+tr.retries+")", "warn");
                 continue;
               }
-              tr.placed[k] = c||0;                     // BELIEF = what was confirmed
-              if (c===0)      log(inp.t, STATIONS[k].name+" UNDER-FILLED after retries — flagged #"+tr.id, "crit");
-              else if (c>=2)  log(inp.t, STATIONS[k].name+" OVER-FILL detected — flagged #"+tr.id, "warn");
+              tr.placed[k] = c||0;                     // BELIEF = confirmed count
+              if (c===0)      log(inp.t, STATIONS[k].name+" gave up: UNDER-FILLED after "+tr.retries+" retries — flagging #"+tr.id, "crit");
+              else if (c>=2)  log(inp.t, STATIONS[k].name+" OVER-FILL: sensor counted "+c+" drops on #"+tr.id+" — flagging", "warn");
+              else            log(inp.t, key+" confirmed on #"+tr.id+" — opening gate", "evt");
+            } else {
+              tr.placed[k] = 1;                        // BELIEVES it placed (ran the output long enough)
+              log(inp.t, "ran "+key+" dispenser "+DISPENSE_MS+"ms → assuming placed, opening gate for #"+tr.id, "evt");
             }
-            tr.stage=k+1; o.gate[k]=true; tr.status="moving"; tr.hold=-1;
-            log(inp.t, "dispensed "+STATIONS[k].key+" -> release #"+tr.id, "evt");
+            tr.stage=k+1; tr.status="moving"; tr.hold=-1;
           }
         }
+        // dispenser output stays ON for the whole hold; the world drops a unit
+        // once it has run for DROP_AT (see worldStep)
+        for (const tr of this.tracks) if (tr.status==="held" && inp.t<tr.dispenseAt) o.dispense[tr.hold]=true;
         for (let k=0;k<3;k++) o.gate[k] = !this.tracks.some(t=>t.status==="held" && t.hold===k);
 
         // 4) tunnel: hold + toast, then release; done at exit
         if (inp.tunnel_entry){ const tr=this._nearest(TUNNEL.entry);
-          if (tr && tr.stage===3 && tr.status==="moving"){ tr.status="toasting"; tr.toastEnd=inp.t+TOAST_MS; log(inp.t,"toasting #"+tr.id+" in tunnel","evt"); } }
-        for (const tr of this.tracks) if (tr.status==="toasting" && inp.t>=tr.toastEnd){ tr.stage=4; tr.status="moving"; log(inp.t,"toast complete — release #"+tr.id,"evt"); }
+          if (tr && tr.stage===3 && tr.status==="moving"){ tr.status="toasting"; tr.toastEnd=inp.t+TOAST_MS; log(inp.t,"#"+tr.id+" reached tunnel — heater ON, holding belt to toast","evt"); } }
+        for (const tr of this.tracks) if (tr.status==="toasting" && inp.t>=tr.toastEnd){ tr.stage=4; tr.status="moving"; log(inp.t,"tunnel dwell "+TOAST_MS+"ms elapsed — releasing #"+tr.id,"evt"); }
         o.heater = this.tracks.some(t=>t.status==="toasting");
         if (inp.tunnel_exit){ const tr=this._nearest(TUNNEL.exit);
           if (tr && tr.stage>=4 && tr.status!=="done"){ tr.status="done"; log(inp.t,"s'more #"+tr.id+" complete ✓","evt"); } }
@@ -488,37 +506,46 @@
       tr._blocked=blocked;
       if (!blocked) tr.pos += out.belt * ACTUAL_SLIP * dt;
     }
-    // dispenser outcomes: a pulse places the REAL number of units (fault: fail=0,
-    // double=2). Ground truth — the controller only assumed 1.
+    // dispensers: the actuator output must run long enough (DROP_AT) to actually
+    // drop a unit. Flaky "fail" misfires the FIRST attempt; a retry succeeds.
+    w.dispOn = w.dispOn||[0,0,0]; w.lastAtt = w.lastAtt||[0,0,0];
     for (let k=0;k<3;k++){
-      if (out.dispense[k] && !w._lastDisp[k]){
-        const wt = w.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
-        if (wt){
-          const mode = w.disp[STATIONS[k].key];
-          let add = 1;
-          if (mode==="double") add = 2;
-          else if (mode==="fail"){                       // flaky: first attempt misfires, a retry succeeds
-            wt._failed = wt._failed || {};
-            if (!wt._failed[k]){ wt._failed[k]=true; add = 0; } else add = 1;
-          }
-          wt.counts[["g","c","m"][k]] += add;
-          w.confirm[k] = add;                            // drop-confirm sensor: units actually placed
-          if (add===0)      log(sim.t*1000, STATIONS[k].name+" dispenser MISFIRE on #"+wt.id+" — 0 placed", "crit");
-          else if (add===2) log(sim.t*1000, STATIONS[k].name+" dispenser DOUBLE-fired on #"+wt.id+" — 2 placed", "warn");
-        } else { w.confirm[k] = 0; }
-      }
+      if (out.dispense[k]){
+        w.dispOn[k] += dt*1000;
+        if (w.dispOn[k]-w.lastAtt[k] >= DROP_AT){        // output has run long enough -> a drop attempt
+          w.lastAtt[k]=w.dispOn[k];
+          const wt = w.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
+          if (wt){
+            wt._att=wt._att||[0,0,0]; wt._att[k]++;
+            const mode=w.disp[STATIONS[k].key];
+            let add=1;
+            if (mode==="double") add=2;
+            else if (mode==="fail") add=(wt._att[k]===1)?0:1;
+            wt.counts[["g","c","m"][k]] += add;
+            w.confirm[k]=add;
+            const nm=STATIONS[k].name;
+            if (add===0)      log(sim.t*1000, nm+": output ran "+DROP_AT+"ms but dispenser MISFIRED — nothing dropped on #"+wt.id, "crit");
+            else if (add===2) log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dispenser DOUBLE-dropped (2) on #"+wt.id, "warn");
+            else              log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dropped a "+STATIONS[k].key+" on #"+wt.id, "evt");
+          } else { w.confirm[k]=0; }
+        }
+      } else { w.dispOn[k]=0; w.lastAtt[k]=0; }
     }
-    w._lastDisp = out.dispense.slice();
-    // toast browning while dwelling — only if a marshmallow exists
-    for (const t of c.tracks){
-      if (t.status==="toasting" || t.stage>=4){
-        const wt = nearestWorld(w, t.estPos);
-        if (wt && wt.counts.m>0) wt.toast = Math.min(1, wt.toast + dt/(TOAST_MS/1000));
-      }
-    }
+    // tunnel physics: heater raises temp; a marshmallow in the beam accumulates
+    // heat energy and toasts once it passes E_TARGET.
     const targetTemp = out.heater ? 205 : 20;
     w.temp += (targetTemp - w.temp) * Math.min(1, dt*0.9);
     w.heaterOn = out.heater;
+    if (w.heaterOn){
+      for (const wt of w.trays){
+        if (wt.pos>=TUNNEL.entry-40 && wt.pos<=TUNNEL.exit+40 && wt.counts.m>0){
+          wt.energy=(wt.energy||0) + Math.max(0, w.temp-20)*dt;
+          wt.toast=Math.min(1, wt.energy/E_TARGET);
+          if (wt.energy>=E_TARGET && !wt._toasted){ wt._toasted=true;
+            log(sim.t*1000, "marshmallow on #"+wt.id+" toasted — accumulated "+Math.round(wt.energy)+" heat units (≥ "+E_TARGET+")", "evt"); }
+        }
+      }
+    }
     w.trays = w.trays.filter(tr=> tr.pos < BELT_LEN+140);   // retire off the end
   }
   function nearestWorld(w, pos){
@@ -583,7 +610,7 @@
   function mkTarget(id, aspect){ const el=document.getElementById(id); return el ? { el, ctx:el.getContext("2d"), cw:900, ch:360, aspect } : null; }
   function fitTarget(t){ if(!t) return; const w=t.el.clientWidth||900; DPR=Math.min(2,window.devicePixelRatio||1); t.cw=w; t.ch=Math.round(w*t.aspect); t.el.width=Math.round(t.cw*DPR); t.el.height=Math.round(t.ch*DPR); t.ctx.setTransform(DPR,0,0,DPR,0,0); }
   function setCanvas(t){ ctx=t.ctx; CW=t.cw; CH=t.ch; }
-  function fitAll(){ fitTarget(TGT.main); fitTarget(TGT.A); fitTarget(TGT.B); fitTL(); }
+  function fitAll(){ fitTarget(TGT.main); fitTarget(TGT.A); fitTarget(TGT.B); fitTLT(TLT.single); fitTLT(TLT.A); fitTLT(TLT.B); }
   const PADX=54, beltH=54;
   function beltY(){ return CH*0.52; }
   function X(mm){ return PADX + (mm/BELT_LEN)*(CW-2*PADX); }
@@ -704,11 +731,13 @@
   function lerpColor(a,b,t){ const pa=hx(a),pb=hx(b); return `rgb(${Math.round(pa[0]+(pb[0]-pa[0])*t)},${Math.round(pa[1]+(pb[1]-pa[1])*t)},${Math.round(pa[2]+(pb[2]-pa[2])*t)})`; }
   function hx(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
 
-  // ---- timeline (signal history, AdvantageScope-style) ----
-  const tlc=document.getElementById("tl"); const tlx=tlc.getContext("2d");
-  let TW=1600, TH=214, TDPR=1;
-  function fitTL(){ const w=tlc.clientWidth||900; TDPR=Math.min(2,window.devicePixelRatio||1); TW=w; TH=214;
-    tlc.width=Math.round(TW*TDPR); tlc.height=Math.round(TH*TDPR); tlx.setTransform(TDPR,0,0,TDPR,0,0); }
+  // ---- timeline (signal history, AdvantageScope-style) — target-switchable ----
+  let tlx, TW=900, TH=214;
+  const TLT={};
+  function mkTL(id, aspect){ const el=document.getElementById(id); return el?{el,ctx:el.getContext("2d"),tw:900,th:214,aspect}:null; }
+  function fitTLT(t){ if(!t)return; const w=t.el.clientWidth||900; const d=Math.min(2,window.devicePixelRatio||1);
+    t.tw=w; t.th=t.aspect?Math.max(160,Math.round(w*t.aspect)):214; t.el.width=Math.round(t.tw*d); t.el.height=Math.round(t.th*d); t.ctx.setTransform(d,0,0,d,0,0); }
+  function setTL(t){ tlx=t.ctx; TW=t.tw; TH=t.th; }
   function rgba(hex,a){ const p=hx(hex); return `rgba(${p[0]},${p[1]},${p[2]},${a})`; }
   // gates shown as CLOSED=high (the informative pulse); sensors/heater raw.
   const TL_LANES=[
@@ -776,7 +805,7 @@
 
   function renderSingle(){
     const e=engines[0]; activate(e); liveInputs=senseInputs(e.world);
-    setCanvas(TGT.main); drawLine(); drawTimeline(e.hist);
+    setCanvas(TGT.main); drawLine(); setTL(TLT.single); drawTimeline(e.hist);
     updateTopbar(e);
     setIO("in-s0",liveInputs.sense[0]); setIO("in-s1",liveInputs.sense[1]); setIO("in-s2",liveInputs.sense[2]);
     setIO("in-te",liveInputs.tunnel_entry); setIO("in-tx",liveInputs.tunnel_exit);
@@ -794,6 +823,8 @@
     for (let i=0;i<engines.length;i++){
       const e=engines[i]; activate(e); liveInputs=senseInputs(e.world);
       setCanvas(i===0?TGT.A:TGT.B); drawLine();
+      setTL(i===0?TLT.A:TLT.B); drawTimeline(e.hist);
+      drawLog(e.log, "lane"+i+"-log");
       $("lane"+i+"-name").textContent = CONTROLLERS[e.mode].name;
       $("lane"+i+"-good").textContent = e.good;
       $("lane"+i+"-bad").textContent  = e.bad;
@@ -884,7 +915,8 @@
 
   // ---- boot ----
   const APP=document.querySelector(".app"); APP.dataset.view="single";
-  TGT.main=mkTarget("line",0.40); TGT.A=mkTarget("laneA",0.30); TGT.B=mkTarget("laneB",0.30);
+  TGT.main=mkTarget("line",0.40); TGT.A=mkTarget("laneA",0.52); TGT.B=mkTarget("laneB",0.52);
+  TLT.single=mkTL("tl",0); TLT.A=mkTL("laneA-tl",0.34); TLT.B=mkTL("laneB-tl",0.34);
   fitAll(); reset(); injectTray();
   log(0,"line ready — controller = "+CONTROLLERS[modeA].name+" · press Run","");
   renderAll();

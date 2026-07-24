@@ -372,39 +372,78 @@ def tick(io, mem):
     return mem["tracks"]
 </script>
 
-  <script type="text/plain" id="starter-cpp">// Open-loop controller (C++). This is the SAME code shape as the shipped
-// controller: it #includes the layout-GENERATED contract, so referencing a
-// module the layout lacks is a COMPILE error (the strongest bound-pair check).
-// Compiled to WebAssembly in your browser (no server) and hot-swapped in.
-#include "smores/generated/Layout.h"
-#include "smores/generated/Contract.h"
+  <script type="text/plain" id="starter-cpp">// Open-loop controller (C++), compiled to WebAssembly IN YOUR BROWSER and run on
+// the line. It #includes the layout-GENERATED contract, so naming a module the
+// layout lacks is a COMPILE error — the strongest bound-pair check. host_log/
+// host_trace are provided by the runtime; host_trace lets 🐞 Debug step this
+// file line by line. Freestanding (no std::), so it links against just libc.
+#include "Contract.h"        // generated from the active layout (pulls in Layout.h)
 using namespace smores;
 
-// A trace callback is injected at each source line so the debugger can step you
-// through this exact file line-by-line (host_trace is provided by the runtime).
-extern "C" void host_trace(int line);
+extern "C" __attribute__((import_module("env"), import_name("host_log")))
+void host_log(const char* kind, const char* msg);
 
-struct Track { int id; float est; int stage; int status; int hold; int placed[layout::N_DISP]; unsigned until; };
+static Inputs  g_in;         // the visualizer writes sensors here each tick
+static Outputs g_out;        // ...reads your actuator commands from here
 
-// Fill Outputs from Inputs each tick. Your tray tracking is the static state.
-extern "C" void tick(const Inputs& in, Outputs& out) {
-    static Track tracks[8]; static int nTracks = 0;
-    static bool lastSense[layout::N_DISP] = {};
-    static unsigned lastNow = 0;
-    float dt = (in.now_ms - lastNow) / 1000.0f; lastNow = in.now_ms;
+// Your tray tracking (the controller's BELIEF). status: 0=moving 1=held 2=toasting 3=done.
+struct Track { int id; float est; int stage; int status; int hold; unsigned until; int placed[layout::N_DISP]; };
+static Track g_tr[8]; static int g_n = 0;
+static bool  g_last[layout::N_DISP];
+static unsigned g_lastNow = 0; static bool g_have = false;
 
-    out.belt_speed = in.run ? layout::NOMINAL_SPEED : 0.f;
-    for (int i = 0; i < nTracks; i++) if (tracks[i].status == 0) tracks[i].est += out.belt_speed * dt;
-
-    for (int k = 0; k < layout::N_DISP; k++) {
-        bool rise = in.sense[k] && !lastSense[k];
-        // ... snap to layout::DISP[k].pos_mm, hold when stage == DISP[k].stage,
-        //     run out.dispense[k], and (open-loop) assume it placed. Your logic!
-        lastSense[k] = in.sense[k];
-    }
-    // tunnel: hold to toast via out.tunnel_gate_open + out.heater, then release;
-    // done once stage >= layout::N_STAGES (the post-tunnel cap counts too).
+static Track* nearest(float pos) {
+    Track* b = nullptr; float bd = 1e9f;
+    for (int i = 0; i < g_n; i++) { Track& t = g_tr[i];
+        if (t.status == 3) continue;
+        float d = t.est - pos; if (d < 0) d = -d;
+        if (d < bd && d < 120.f) { bd = d; b = &t; } }
+    return b;
 }
+
+extern "C" {
+Inputs*  inputs_ptr()  { return &g_in; }
+Outputs* outputs_ptr() { return &g_out; }
+int      track_count() { return g_n; }
+float    track_field(int i, int f) { if (i < 0 || i >= g_n) return 0.f; Track& t = g_tr[i];
+    switch (f) { case 0: return t.id; case 1: return t.est; case 2: return t.stage; case 3: return t.status;
+        default: return (f >= 4 && f < 4 + layout::N_DISP) ? t.placed[f-4] : 0.f; } }
+
+void tick() {
+    unsigned now = g_in.now_ms;
+    float dt = g_have ? (now - g_lastNow) / 1000.0f : 0.0f; if (dt < 0 || dt > 0.5f) dt = 0; g_lastNow = now; g_have = true;
+    g_out.belt_speed = g_in.run ? layout::NOMINAL_SPEED : 0.f;
+    for (int k = 0; k < layout::N_DISP; k++) { g_out.gate_open[k] = true; g_out.dispense[k] = false; }
+    g_out.tunnel_gate_open = true; g_out.heater = false;
+
+    for (int i = 0; i < g_n; i++) if (g_tr[i].status == 0) g_tr[i].est += g_out.belt_speed * dt;   // dead-reckon
+
+    for (int k = 0; k < layout::N_DISP; k++) {                          // sensor rising edge -> snap + hold
+        bool rise = g_in.sense[k] && !g_last[k];
+        if (rise) {
+            Track* t = nearest(layout::DISP[k].pos_mm);
+            if (!t && k == 0 && g_n < 8) { Track& nt = g_tr[g_n++]; nt.id = g_n; nt.est = layout::DISP[0].pos_mm;
+                nt.stage = 0; nt.status = 0; nt.hold = -1; for (int j = 0; j < layout::N_DISP; j++) nt.placed[j] = 0; t = &nt; }
+            if (t) { t->est = layout::DISP[k].pos_mm;
+                if (t->stage == layout::DISP[k].stage) { t->status = 1; t->hold = k; t->until = now + 650; } }
+        }
+        g_last[k] = g_in.sense[k];
+    }
+    for (int i = 0; i < g_n; i++) { Track& t = g_tr[i];                 // service holds (OPEN-LOOP: assume placed)
+        if (t.status == 1) { int k = t.hold; g_out.gate_open[k] = false; g_out.dispense[k] = true;
+            if (now >= t.until) { t.placed[k] = 1; t.stage = layout::DISP[k].stage + 1; t.status = 0; t.hold = -1; } } }
+
+    if (layout::HAS_TUNNEL && g_in.tunnel_entry) { Track* t = nearest(layout::TUNNEL_ENTRY_MM);   // toast in the tunnel
+        if (t && t->stage == layout::TUNNEL_STAGE && t->status == 0) { t->status = 2; t->until = now + 3800; } }
+    bool toasting = false;
+    for (int i = 0; i < g_n; i++) { if (g_tr[i].status == 2) {
+        if (now >= g_tr[i].until) { g_tr[i].stage = layout::TUNNEL_STAGE + 1; g_tr[i].status = 0; } else toasting = true; } }
+    g_out.heater = toasting; g_out.tunnel_gate_open = !toasting;
+
+    for (int i = 0; i < g_n; i++) if (g_tr[i].status == 0 && g_tr[i].stage >= layout::N_STAGES) {   // complete
+        g_tr[i].status = 3; host_log("evt", "s'more complete"); }
+}
+} // extern "C"
 </script>
 
   <main class="stage single-only">
@@ -654,7 +693,7 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
   function activate(e){ world=e.world; ctrl=e.ctrl; activeLog=e.log; }
 
   function reset(){
-    engines = viewMode==="studio"  ? [makeJsEngine()]
+    engines = viewMode==="studio"  ? [ STUDIO.lang==="cpp" ? makeCppEngine(STUDIO.cppModule) : makeJsEngine() ]
             : viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)]
             :                        [makeEngine(modeA)];
     sim = { t:0, tick:0, playing:false, speed:1, acc:0 };
@@ -1230,10 +1269,11 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     if (DBG.on) dbgStop();
     try {
       if (STUDIO.lang==="python")   STUDIO.compiled = await studioCompilePython();
-      else if (STUDIO.lang==="cpp") throw new Error("C++ runs via in-browser compile (a later step) — use JavaScript or Python for now");
+      else if (STUDIO.lang==="cpp") STUDIO.cppModule = await cppCompile();
       else                          STUDIO.compiled = studioCompile().tick;
-      reset(); injectTray(); renderAll();          // reset() builds a JS-backed lane in studio view
-      studioStatus("running your "+(STUDIO.lang==="python"?"Python":"JavaScript")+" controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
+      reset(); injectTray(); renderAll();          // reset() builds the studio lane
+      const label = {js:"JavaScript", python:"Python", cpp:"C++"}[STUDIO.lang];
+      studioStatus("running your "+label+" controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
       return true;
     } catch(err){ studioStatus("could not run: "+err.message, "err"); return false; }
   }
@@ -1314,7 +1354,7 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     if (viewMode!=="studio") return;
     try {
       if (STUDIO.lang==="python"){ STUDIO.compiled = await studioCompilePython(); DBG.primeFn = dbgPrimePy; }
-      else if (STUDIO.lang==="cpp"){ throw new Error("C++ step-debugging arrives with in-browser compile (a later step)"); }
+      else if (STUDIO.lang==="cpp"){ STUDIO.cppModule = await cppCompile(); DBG.primeFn = dbgPrimeCpp; }
       else { STUDIO.compiled = studioCompileTraced(); DBG.primeFn = dbgPrime; }
     } catch(err){ studioStatus("could not debug: "+err.message, "err"); return; }
     reset(); injectTray();
@@ -1382,13 +1422,105 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     DBG.pos=0; dbgShow();
   }
 
+  // ---- G3: C++ controllers compiled IN-BROWSER (wasm-clang) + host_trace stepping ----
+  const CLANG_BASE = "./vendor/wasm-clang/";
+  let CAPI = null, _clangLoading = null, _clangLog = "";
+  function loadClang(){
+    if (CAPI) return Promise.resolve(CAPI);
+    if (!_clangLoading) _clangLoading = (async()=>{
+      studioStatus("loading the in-browser C++ toolchain (clang+lld, ~50 MB) from vendor/ — first time only…");
+      await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=CLANG_BASE+"shared.js"; s.onload=res; s.onerror=()=>rej(new Error("wasm-clang not vendored — run `make wasm-clang`")); document.head.appendChild(s); });
+      CAPI = new API({
+        readBuffer: async n => (await (await fetch(CLANG_BASE+n)).arrayBuffer()),
+        compileStreaming: async n => WebAssembly.compile(await (await fetch(CLANG_BASE+n)).arrayBuffer()),
+        hostWrite: t => { _clangLog += t; },
+      });
+      await CAPI.ready;      // untar the wasi sysroot into the in-memory FS
+      return CAPI;
+    })();
+    return _clangLoading;
+  }
+  const HOST_TRACE_DECL = 'extern "C" __attribute__((import_module("env"),import_name("host_trace"))) void host_trace(int);';
+  // insert host_trace(line) before each statement inside void tick(){...} only
+  function cppInstrumentTick(src){
+    const m = src.indexOf("void tick()"); if (m<0) return src;
+    let i = src.indexOf("{", m); if (i<0) return src;
+    let depth=0, end=-1;
+    for (let j=i;j<src.length;j++){ const c=src[j]; if(c==='{')depth++; else if(c==='}'){ if(--depth===0){ end=j; break; } } }
+    if (end<0) return src;
+    const preLines = src.slice(0,i+1).split("\n").length;
+    const body = src.slice(i+1,end).split("\n").map((raw,k)=>{
+      const line = preLines + k, t = raw.replace(/\/\/.*$/,"").trim();
+      const skip = t==="" || raw.trim().startsWith("//") || /^[}\])]/.test(t) || /^(else|case|default)\b/.test(t) || /[,+\-*/%&|=?:.(<>]$/.test(t);
+      return skip ? raw : raw.replace(/^(\s*)/, `$1host_trace(${line});`);
+    }).join("\n");
+    return src.slice(0,i+1) + body + src.slice(end);
+  }
+  async function cppCompile(){
+    const api = await loadClang(); _clangLog = "";
+    const [L,C] = await Promise.all([
+      (await fetch(`./layouts/${currentLayout}.Layout.h`)).text(),
+      (await fetch(`./layouts/${currentLayout}.Contract.h`)).text(),
+    ]);
+    api.memfs.addFile("Layout.h", L); api.memfs.addFile("Contract.h", C);
+    const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(STUDIO.editor.getValue());
+    studioStatus("compiling your C++ with clang → WebAssembly (in the browser)…");
+    await api.compile({ input:"ctrl.cc", contents:src, obj:"ctrl.o" });
+    const lld = await api.getModule(api.lldFilename);
+    await api.run(lld, "wasm-ld","--no-threads","--no-entry","--allow-undefined",
+      "--export=tick","--export=inputs_ptr","--export=outputs_ptr","--export=track_count","--export=track_field","--export=__wasm_call_ctors",
+      "-z","stack-size=1048576","-Llib/wasm32-wasi","ctrl.o","-lc","-o","ctrl.wasm");
+    let bytes; try { bytes = api.memfs.getFileContents("ctrl.wasm"); } catch(e){ bytes=null; }
+    if (!bytes || !bytes.length) throw new Error("compile/link failed:\n"+_clangLog.replace(/\x1b\[[0-9;]*m/g,"").slice(-600));
+    return WebAssembly.compile(bytes);
+  }
+  function makeCppEngine(module){
+    const e = { mode:"cpp",
+      world:{ trays:[], nextId:1, temp:20, heaterOn:false,
+        faults:Array(N_DISP).fill("ok"), blind:Array(N_DISP).fill(false), jam:Array(N_DISP).fill(false), confirm:Array(N_DISP).fill(0) },
+      ctrl:{ out:{ belt:0, gate:Array(N_DISP).fill(true), dispense:Array(N_DISP).fill(false), heater:false, tunnelGateOpen:true }, tracks:[] },
+      log:[], hist:[], good:0, bad:0, tallied:{} };
+    let inst;
+    const cstr = (p)=>{ const u=new Uint8Array(inst.exports.memory.buffer); let q=p; while(u[q])q++; return _dec.decode(u.subarray(p,q)); };
+    inst = new WebAssembly.Instance(module, {
+      wasi_snapshot_preview1: { fd_close:()=>0, fd_seek:()=>0, fd_write:()=>0, proc_exit:()=>0 },
+      env: { host_log:(kp,mp)=>{ e.log.push({ t:(sim?sim.t:0).toFixed(2), m:cstr(mp), k:cstr(kp) }); if(e.log.length>200) e.log.shift(); },
+             host_trace:(line)=>cppTrace(line) },
+    });
+    if (inst.exports.__wasm_call_ctors) inst.exports.__wasm_call_ctors();
+    e.wasm = { inst, inPtr: inst.exports.inputs_ptr(), outPtr: inst.exports.outputs_ptr() };
+    e.drive = (inp)=>{ writeInputs(e.wasm, inp); inst.exports.tick(); readCtrl(e); };
+    return e;
+  }
+  // host_trace records (line, live tracks + outputs read back from wasm memory)
+  function cppTrace(line){
+    if (!DBG.collecting) return;
+    const inst = DBG.engine.wasm.inst, dv = new DataView(inst.exports.memory.buffer), p = DBG.engine.wasm.outPtr;
+    const n = inst.exports.track_count(), tr = [];
+    for (let i=0;i<n;i++){ const placed=[]; for(let k=0;k<N_DISP;k++) placed.push(inst.exports.track_field(i,4+k)|0);
+      tr.push({ id:inst.exports.track_field(i,0)|0, estPos:inst.exports.track_field(i,1), stage:inst.exports.track_field(i,2)|0, status:_ST[inst.exports.track_field(i,3)|0]||"moving", placed }); }
+    const out = { belt:dv.getFloat32(p+OUT_OFF.belt_speed,true), gate:[], dispense:[], heater:("heater" in OUT_OFF)&&!!dv.getUint8(p+OUT_OFF.heater) };
+    for (let k=0;k<N_DISP;k++){ out.gate.push(!!dv.getUint8(p+OUT_OFF.gate_open+k)); out.dispense.push(!!dv.getUint8(p+OUT_OFF.dispense+k)); }
+    DBG.trace.push({ line, mem:{ tracks:tr }, out });
+  }
+  function dbgPrimeCpp(){
+    const e=DBG.engine;
+    DBG.inp = senseInputs(e.world);
+    writeInputs(e.wasm, DBG.inp);
+    DBG.trace=[]; DBG.collecting=true;
+    e.wasm.inst.exports.tick();      // host_trace fires per line, recording state
+    DBG.collecting=false;
+    readCtrl(e);
+    DBG.pos=0; dbgShow();
+  }
+
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
   $("playBtn").addEventListener("click", async ()=>{
     if (viewMode==="studio" && !sim.playing){ if(!(await studioLoad())) return; }  // (re)compile current code, then play
     sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
   $("stepBtn").addEventListener("click", async ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run";
-    if (viewMode==="studio" && !(engines[0] && engines[0].mode==="js")){ if(!(await studioLoad())) return; }
+    if (viewMode==="studio" && !(engines[0] && (engines[0].mode==="js" || engines[0].mode==="cpp"))){ if(!(await studioLoad())) return; }
     stepOnce(); });
   $("resetBtn").addEventListener("click", async ()=>{
     if (viewMode==="studio"){ await studioLoad(); $("playBtn").innerHTML="▶ Run"; return; }

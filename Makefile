@@ -55,6 +55,8 @@ app:
 	  $(MAKE) -s -C controller wasm LAYOUT=$$L >/dev/null; \
 	  cp controller/build/controller.wasm docs/app/wasm/$$L.wasm; \
 	  cp controller/generated/$$L.meta.json docs/app/layouts/$$L.layout.json; \
+	  cp controller/include/smores/generated/Layout.h   docs/app/layouts/$$L.Layout.h; \
+	  cp controller/include/smores/generated/Contract.h docs/app/layouts/$$L.Contract.h; \
 	done
 	@$(MAKE) -s -C controller codegen LAYOUT=classic3 >/dev/null   # leave default checked out
 	@echo "app assembled -> docs/app/  (layouts: $(APP_LAYOUTS)) — run 'make serve' to view"

@@ -31,6 +31,10 @@ docs/app/layouts/
 controller/include/smores/generated/
 controller/generated/
 
+# In-browser C++ toolchain (clang+lld+sysroot compiled to wasm) — large,
+# machine-agnostic third-party binaries. Fetch with tools/get-wasm-clang.sh.
+docs/app/vendor/
+
 # Repo-local toolchains (wasi-sdk downloaded by tools/get-wasi-sdk.sh) — large,
 # machine/arch-specific; re-download with `make chip-local`.
 .toolchains/

@@ -59,6 +59,11 @@ app:
 	@$(MAKE) -s -C controller codegen LAYOUT=classic3 >/dev/null   # leave default checked out
 	@echo "app assembled -> docs/app/  (layouts: $(APP_LAYOUTS)) — run 'make serve' to view"
 
+## wasm-clang: vendor the in-browser C++ -> WASM toolchain (clang+lld+sysroot,
+## ~60MB, gitignored) so the Studio's C++ tab can compile client-side. One-time.
+wasm-clang:
+	./tools/get-wasm-clang.sh
+
 ## serve: assemble + serve docs/app over http (fetch() of the .wasm needs http,
 ## not file://). Open http://localhost:8000/ .
 serve: app

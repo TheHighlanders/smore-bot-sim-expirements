@@ -223,6 +223,25 @@ the **layout-aware** API, or student code breaks the moment a layout changes:
 - **ER-4** Step-debugging (G2/G3) is layout-independent: a line/step callback
   fires regardless of module count, and the "variables" view can show the
   per-module track state the same way at 3 or 6 modules.
+- **ER-5 Layout compatibility is validated in every language, matched to when
+  that language can catch it.** The C++ path is checked at **compile time** (the
+  generated typed contract + `static_assert`s against `layout::` constants — a
+  controller that names a module its layout lacks won't build). JS and Python
+  controllers have no compile step, so they get an **equivalent runtime check**
+  with the same guarantee, surfaced *before the sim advances*, not mid-run:
+  - **Declared requirements.** A scripted controller declares what it needs
+    (e.g. `requires = { dispensers: ["g1","c1","m1","g2"], tunnel: true,
+    smusher: false }`, or simply `layout = "sandwich"`). At load, the runtime
+    validates that against the active layout's meta (the `meta()` JSON the
+    codegen already emits) and refuses to run on a mismatch, printing a clear
+    message ("controller requires module `g2` (graham cap); layout `classic3`
+    has no such module") — the runtime analogue of a C++ compile error.
+  - **Per-access guard.** The `io` accessors (`io.sense("g2")`, `io.dispense(
+    "g2")`, …) throw a descriptive error if the id/index isn't in the layout, so
+    even an undeclared access fails loudly instead of silently reading garbage.
+  The check is the same idea as the compile-time one — *this controller and this
+  layout are a bound pair* — just enforced at the earliest point each language
+  allows.
 
 ## L-8. Validation & failure surfacing
 

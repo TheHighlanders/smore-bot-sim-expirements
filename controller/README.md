@@ -13,10 +13,16 @@ visualizer and (later) for the real P1AM over SPI — same code, different HAL.
 
 ```
 controller/
+├── layouts/           # LAYOUT DEFINITIONS (JSON) — the source of truth for the
+│   ├── classic3.json  #   machine topology. A controller is a BOUND PAIR with one
+│   └── sandwich.json  #   layout; the layout generates the contract it compiles to.
 ├── include/smores/
-│   ├── Contract.h     # Inputs/Outputs structs — the controller↔world contract (§4)
+│   ├── generated/     # GENERATED from layouts/<LAYOUT>.json (gitignored):
+│   │   ├── Layout.h   #   compile-time geometry/counts (layout::N_DISP, DISP[], …)
+│   │   └── Contract.h #   the Inputs/Outputs structs for THIS layout
+│   ├── Contract.h     # thin shim -> generated/Contract.h (keeps includes working)
 │   ├── Hal.h          # abstract hardware interface (per-signal get/set)
-│   ├── Subsystems.h   # Conveyor / Station×3 / HeatingTunnel — stateless intent
+│   ├── Subsystems.h   # Conveyor / Station / HeatingTunnel — stateless intent
 │   ├── Controller.h   # the one stateful piece (tray tracking + state machine)
 │   └── StructHal.h    # HAL backed by the Contract structs (sim/WASM + tests)
 ├── src/Controller.cpp # control logic (open-loop / closed-loop variants)
@@ -25,6 +31,14 @@ controller/
     ├── test_subsystems.cpp   # each subsystem method → the right HAL call
     └── test_controller.cpp   # drive the controller via a fake world, assert outcomes
 ```
+
+**Layouts.** The machine topology (dispenser positions, the tunnel, servo counts,
+a smusher, a post-tunnel graham cap) is described in `layouts/<name>.json` and
+compiled by [`tools/layout/codegen.mjs`](../tools/layout/codegen.mjs) into the
+typed `generated/Contract.h` + `generated/Layout.h` the controller is written
+against — so a controller that names a module its layout lacks won't build. See
+[../docs/simulator/LAYOUTS.md](../docs/simulator/LAYOUTS.md). Pick the layout with
+`make LAYOUT=sandwich …` (default `classic3`).
 
 ## Design
 

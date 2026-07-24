@@ -22,14 +22,14 @@ struct Track {
     Status   status       = Moving;
     int      hold         = -1;     // station index being held at, or -1
     uint32_t phase_until  = 0;      // ms: dispense/toast phase end
-    int      placed[N_STATIONS] = {0,0,0};  // believed units per station
+    int      placed[layout::N_DISP] = {};  // believed units per dispenser
     int      retries      = 0;
 };
 
+// Geometry (station positions, tunnel, belt, speed) now comes from the generated
+// layout (layout::*, from the bound layout.json). Config keeps only the control
+// timings — decisions the controller makes, not physical facts of the machine.
 struct Config {
-    float    station_pos_mm[N_STATIONS] = {300.f, 600.f, 900.f};
-    float    tunnel_entry_mm = 1050.f, tunnel_exit_mm = 1185.f, belt_len_mm = 1200.f;
-    float    nominal_speed   = 110.f;   // mm/s
     uint32_t dispense_ms     = 650;     // dispenser output run time before release
     uint32_t toast_ms        = 3800;    // tunnel dwell
 };
@@ -41,7 +41,7 @@ class Controller {
 public:
     Controller(Hal& hal, Mode mode, Config cfg = Config(), LogSink log = nullptr)
         : hal_(hal), mode_(mode), cfg_(cfg), log_(log),
-          conveyor_(hal), stations_{ {hal,0}, {hal,1}, {hal,2} }, tunnel_(hal) {}
+          conveyor_(hal), tunnel_(hal) {}
 
     void update();                                   // one control tick
     const std::vector<Track>& tracks() const { return tracks_; }
@@ -56,11 +56,10 @@ private:
     Config         cfg_;
     LogSink        log_;
     Conveyor       conveyor_;
-    Station        stations_[N_STATIONS];
     HeatingTunnel  tunnel_;
     std::vector<Track> tracks_;
     int      next_id_   = 1;
-    bool     last_sense_[N_STATIONS] = {false,false,false};
+    bool     last_sense_[layout::N_DISP] = {};
     uint32_t last_now_  = 0;
     bool     have_now_  = false;
 };

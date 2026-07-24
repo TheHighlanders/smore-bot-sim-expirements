@@ -23,6 +23,11 @@ build/
 # controller/src). Rebuild with `make app`; CI builds it fresh before deploy.
 docs/app/controller.wasm
 
+# Generated typed contract + layout meta (codegen from controller/layouts/*.json).
+# Source of truth is the layout JSON; regenerate with `make -C controller codegen`.
+controller/include/smores/generated/
+controller/generated/
+
 # Repo-local toolchains (wasi-sdk downloaded by tools/get-wasi-sdk.sh) — large,
 # machine/arch-specific; re-download with `make chip-local`.
 .toolchains/

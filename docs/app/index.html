@@ -251,24 +251,8 @@
       <section class="panel">
         <div class="panel-hd"><h2>I/O contract</h2><span class="hint">live · this tick</span></div>
         <div class="io-grid">
-          <div class="io-col">
-            <h3>Inputs → controller</h3>
-            <div class="io-row"><span class="lbl">sense[graham]</span><span class="val off" id="in-s0">0</span></div>
-            <div class="io-row"><span class="lbl">sense[choc]</span><span class="val off" id="in-s1">0</span></div>
-            <div class="io-row"><span class="lbl">sense[marsh]</span><span class="val off" id="in-s2">0</span></div>
-            <div class="io-row"><span class="lbl">tunnel_entry</span><span class="val off" id="in-te">0</span></div>
-            <div class="io-row"><span class="lbl">tunnel_exit</span><span class="val off" id="in-tx">0</span></div>
-            <div class="io-row"><span class="lbl">tunnel_temp</span><span class="val" id="in-temp">20&deg;</span></div>
-          </div>
-          <div class="io-col">
-            <h3>Outputs → world</h3>
-            <div class="io-row"><span class="lbl">belt_speed</span><span class="val" id="out-belt">0</span></div>
-            <div class="io-row"><span class="lbl">gate[graham]</span><span class="val" id="out-g0">open</span></div>
-            <div class="io-row"><span class="lbl">gate[choc]</span><span class="val" id="out-g1">open</span></div>
-            <div class="io-row"><span class="lbl">gate[marsh]</span><span class="val" id="out-g2">open</span></div>
-            <div class="io-row"><span class="lbl">dispense[·]</span><span class="val off" id="out-disp">—</span></div>
-            <div class="io-row"><span class="lbl">heater</span><span class="val off" id="out-heat">off</span></div>
-          </div>
+          <div class="io-col"><h3>Inputs → controller</h3><div id="io-inputs"></div></div>
+          <div class="io-col"><h3>Outputs → world</h3><div id="io-outputs"></div></div>
         </div>
       </section>
 
@@ -314,6 +298,10 @@
 
   <footer class="dock">
     <div class="group">
+      <span class="glabel">Layout</span>
+      <select id="layoutSel" class="btn" title="Machine topology — a layout.json bound to its controller.wasm" style="padding:7px 10px"></select>
+    </div>
+    <div class="group">
       <span class="glabel">View</span>
       <button class="btn ctrl-sel ctrl-active" id="viewSingle" title="One controller, full instrumentation">Single</button>
       <button class="btn ctrl-sel" id="viewCompare" title="Two controllers side by side on identical stimulus">Compare A/B</button>
@@ -339,15 +327,13 @@
     </div>
     <div class="group">
       <span class="glabel">Fault&nbsp;inject</span>
-      <button class="btn" id="failGBtn" aria-pressed="false" title="Graham dispenser fails to fire — no graham placed; the open-loop controller never notices">✕ Fail graham disp</button>
-      <button class="btn" id="dblCBtn" aria-pressed="false" title="Chocolate dispenser double-fires — two chocolates placed on one command">✚ Double choc disp</button>
-      <button class="btn" id="blindBtn" aria-pressed="false" title="Controller must dead-reckon through the blinded marshmallow sensor">◎ Blind marsh sensor</button>
-      <button class="btn" id="jamBtn" aria-pressed="false" title="Chocolate gate won't open — tray gets stuck, controller flags it">🔒 Jam choc gate</button>
+      <span id="faultBtns" style="display:flex;gap:8px;flex-wrap:wrap"></span>
     </div>
   </footer>
 
-  <p class="footnote">Mockup — the on-screen brain is a <b>JS stand-in controller</b> behind the same input→output contract the real
-    <b>WASM controller</b> will implement. Physics &amp; sensors are simulated; drift is deliberate so you can watch it correct at each sensor.</p>
+  <p class="footnote">The on-screen brain is the <b>real C++ controller compiled to WebAssembly</b>, driven tick-by-tick
+    across the same input→output contract that its <b>layout.json generated</b>. Physics &amp; sensors are simulated;
+    drift is deliberate so you can watch the controller correct it at each sensor.</p>
 </div>
 
 <script>
@@ -364,22 +350,52 @@
     good:"#57c08a", warn:"#f0c24a", crit:"#e2493a"
   };
 
-  // ---- geometry (world units = mm), see REQUIREMENTS §2 ----
-  const BELT_LEN = 1200;
-  const STATIONS = [
-    { key:"graham", name:"GRAHAM",     pos:300, color:C.graham },
-    { key:"choc",   name:"CHOCOLATE",  pos:600, color:C.choc   },
-    { key:"marsh",  name:"MARSHMALLOW",pos:900, color:C.marsh  }
+  // ---- geometry & layout (DATA-DRIVEN; from the generated layout meta) ----
+  // The line topology (how many dispensers, where, the tunnel, the belt) comes
+  // from a layout.json that ALSO generated the controller's contract — a bound
+  // pair (LAYOUTS.md). We fetch that layout's meta (module descriptors + struct
+  // offsets) + its matching controller.wasm, then rebuild STATIONS/TUNNEL/BELT_LEN
+  // and the I/O marshalling from it. So adding the post-tunnel graham cap is a
+  // layout swap, not a code change.
+  const INGREDIENT_COLOR = { graham:C.graham, chocolate:C.choc, marshmallow:C.marsh };
+  const LAYOUT_CHOICES = [
+    { name:"sandwich", title:"Sandwich · graham cap after tunnel" },
+    { name:"classic3", title:"Classic · 3 stations, no cap" },
   ];
-  const TUNNEL = { entry:1050, exit:1185 };
-  const NOMINAL_SPEED = 110;      // mm/s the controller commands
-  const ACTUAL_SLIP   = 0.965;    // world moves a bit slower -> estimate drifts high
+  let LAYOUT = null;               // active layout meta (+ .module = compiled wasm)
+  let STATIONS = [];               // dispensers: {id,key,name,pos,color,ingredient,servos,after_tunnel,is_cap}
+  let TUNNEL = null;               // {entry,exit} or null
+  let BELT_LEN = 1200, NOMINAL_SPEED = 110;
+  let IN_OFF = {}, OUT_OFF = {}, N_DISP = 0;
+
+  // world params (layout-independent physics)
+  const ACTUAL_SLIP = 0.965;      // world moves a bit slower than commanded -> drift
   const SENSE_WIN = 22;           // mm: sensor trips within this of its point
   const TRAY_W = 64;
   const DISPENSE_MS = 650;        // controller keeps the dispenser output ON this long
   const DROP_AT     = 450;        // ms of continuous output before a unit actually drops
   const TOAST_MS = 3800;          // controller's tunnel dwell time
   const E_TARGET = 420;           // heat units a marshmallow must accumulate to toast
+
+  let currentLayout = LAYOUT_CHOICES[0].name;   // which layout is loaded
+  const _wasmCache = {};                        // name -> compiled WebAssembly.Module
+  async function loadLayout(name){
+    const meta = await (await fetch(`./layouts/${name}.layout.json`)).json();
+    if (!_wasmCache[name]) _wasmCache[name] = await WebAssembly.compile(await (await fetch(`./wasm/${name}.wasm`)).arrayBuffer());
+    LAYOUT = meta; LAYOUT.module = _wasmCache[name];
+    N_DISP = meta.dispensers.length;
+    STATIONS = meta.dispensers.map(d => ({
+      id:d.id, key:d.id, name:(d.ingredient||d.id).toUpperCase()+(d.role==="cap"?" · CAP":""),
+      pos:d.pos_mm, color:INGREDIENT_COLOR[d.ingredient]||C.muted, ingredient:d.ingredient,
+      servos:d.servos, after_tunnel:d.after_tunnel, is_cap:d.role==="cap", stage:d.stage,
+    }));
+    TUNNEL = meta.tunnel ? { entry:meta.tunnel.pos_mm, exit:meta.tunnel.exit_mm } : null;
+    BELT_LEN = meta.belt.length_mm; NOMINAL_SPEED = meta.belt.nominal_speed_mm_s;
+    IN_OFF  = Object.fromEntries(meta.offsets.inputs.fields.map(f=>[f.name,f.offset]));
+    OUT_OFF = Object.fromEntries(meta.offsets.outputs.fields.map(f=>[f.name,f.offset]));
+    currentLayout = name;
+    buildTimelineLanes(); buildIORows(); buildFaultUI();
+  }
 
   // ---- engine: one self-contained "lane" = independent world + controller ----
   // Compare mode runs two engines in parallel on ONE shared clock and IDENTICAL
@@ -388,12 +404,9 @@
   // "current target" globals set by activate()/setCanvas(); the renderer reads these.
   let world, ctrl, liveInputs=null, activeLog=[];
 
-  // ---- REAL controller: compiled C++ -> controller.wasm, one instance per lane ----
-  // Contract struct layout (wasm32): Inputs(20B) now_ms@0 | sense[3]@4 | t_entry@7
-  // | t_exit@8 | temp f32@12 | confirm[3]@16 | run@19.  Outputs(12B) belt f32@0
-  // | gate[3]@4 | dispense[3]@7 | tunnel_gate@10 | heater@11.
-  let WASM_MODULE = null;
-  async function loadWasm(){ const r = await fetch("./controller.wasm"); WASM_MODULE = await WebAssembly.compile(await r.arrayBuffer()); }
+  // ---- REAL controller: the layout's compiled C++ -> wasm, one instance per lane ----
+  // Struct offsets come from the layout meta (IN_OFF/OUT_OFF); arrays are N_DISP
+  // long. So the same JS drives a 3- or 4-dispenser line unchanged.
   const _dec = new TextDecoder();
   const _ST  = ["moving","held","toasting","done","lost"];
   function makeWasmCtrl(mode, e){
@@ -403,35 +416,43 @@
       wasi_snapshot_preview1: { fd_close:()=>0, fd_seek:()=>0, fd_write:()=>0 },
       env: { host_log:(kp,mp)=>{ e.log.push({ t:(sim?sim.t:0).toFixed(2), m:cstr(mp), k:cstr(kp) }); if (e.log.length>200) e.log.shift(); } },
     };
-    inst = new WebAssembly.Instance(WASM_MODULE, imp);
+    inst = new WebAssembly.Instance(LAYOUT.module, imp);
     inst.exports._initialize();
     inst.exports.init(mode === "closed" ? 1 : 0);
     return { inst, inPtr: inst.exports.inputs_ptr(), outPtr: inst.exports.outputs_ptr() };
   }
   function writeInputs(w, inp){
     const dv = new DataView(w.inst.exports.memory.buffer), p = w.inPtr;
-    dv.setUint32(p+0, Math.round(inp.t), true);
-    for (let k=0;k<3;k++) dv.setUint8(p+4+k, inp.sense[k]?1:0);
-    dv.setUint8(p+7, inp.tunnel_entry?1:0); dv.setUint8(p+8, inp.tunnel_exit?1:0);
-    dv.setFloat32(p+12, inp.tunnel_temp, true);
-    for (let k=0;k<3;k++) dv.setUint8(p+16+k, inp.confirm[k]|0);
-    dv.setUint8(p+19, inp.run?1:0);
+    dv.setUint32(p+IN_OFF.now_ms, Math.round(inp.t), true);
+    for (let k=0;k<N_DISP;k++) dv.setUint8(p+IN_OFF.sense+k, inp.sense[k]?1:0);
+    for (let k=0;k<N_DISP;k++) dv.setUint8(p+IN_OFF.dispense_confirm+k, inp.confirm[k]|0);
+    if ("tunnel_entry" in IN_OFF){
+      dv.setUint8(p+IN_OFF.tunnel_entry, inp.tunnel_entry?1:0);
+      dv.setUint8(p+IN_OFF.tunnel_exit,  inp.tunnel_exit?1:0);
+      dv.setFloat32(p+IN_OFF.tunnel_temp_c, inp.tunnel_temp, true);
+    }
+    dv.setUint8(p+IN_OFF.run, inp.run?1:0);
   }
   function readCtrl(e){
     const w = e.wasm, dv = new DataView(w.inst.exports.memory.buffer), p = w.outPtr, o = e.ctrl.out;
-    o.belt = dv.getFloat32(p+0, true);
-    for (let k=0;k<3;k++){ o.gate[k] = !!dv.getUint8(p+4+k); o.dispense[k] = !!dv.getUint8(p+7+k); }
-    o.tunnelGateOpen = !!dv.getUint8(p+10); o.heater = !!dv.getUint8(p+11);
+    o.belt = dv.getFloat32(p+OUT_OFF.belt_speed, true);
+    for (let k=0;k<N_DISP;k++){ o.gate[k] = !!dv.getUint8(p+OUT_OFF.gate_open+k); o.dispense[k] = !!dv.getUint8(p+OUT_OFF.dispense+k); }
+    o.tunnelGateOpen = ("tunnel_gate_open" in OUT_OFF) ? !!dv.getUint8(p+OUT_OFF.tunnel_gate_open) : true;
+    o.heater = ("heater" in OUT_OFF) ? !!dv.getUint8(p+OUT_OFF.heater) : false;
     const n = w.inst.exports.track_count(), f = (i,fl)=>w.inst.exports.track_field(i,fl), arr = [];
-    for (let i=0;i<n;i++) arr.push({ id:f(i,0)|0, estPos:f(i,1), stage:f(i,2)|0, status:_ST[f(i,3)|0]||"moving", placed:[f(i,4)|0,f(i,5)|0,f(i,6)|0] });
+    for (let i=0;i<n;i++){ const placed=[]; for (let k=0;k<N_DISP;k++) placed.push(f(i,4+k)|0);
+      arr.push({ id:f(i,0)|0, estPos:f(i,1), stage:f(i,2)|0, status:_ST[f(i,3)|0]||"moving", placed }); }
     e.ctrl.tracks = arr;
   }
   function makeEngine(mode){
     const e = {
       mode,
-      world:{ trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false,
-              disp:{graham:"ok",choc:"ok",marsh:"ok"}, confirm:[0,0,0] },
-      ctrl:{ out:{ belt:0, gate:[true,true,true], dispense:[false,false,false], heater:false, tunnelGateOpen:true }, tracks:[] },
+      world:{ trays:[], nextId:1, temp:20, heaterOn:false,
+              faults:Array(N_DISP).fill("ok"),   // per-dispenser: ok | fail | double
+              blind:Array(N_DISP).fill(false),   // per-dispenser sensor blinded
+              jam:Array(N_DISP).fill(false),     // per-dispenser gate jammed shut
+              confirm:Array(N_DISP).fill(0) },
+      ctrl:{ out:{ belt:0, gate:Array(N_DISP).fill(true), dispense:Array(N_DISP).fill(false), heater:false, tunnelGateOpen:true }, tracks:[] },
       log:[], hist:[], good:0, bad:0, tallied:{}
     };
     e.wasm = makeWasmCtrl(mode, e);
@@ -448,7 +469,7 @@
 
   // stimulus is shared across all lanes
   function injectTray(){
-    for (const e of engines) e.world.trays.push({ id:e.world.nextId++, pos:-TRAY_W/2, counts:{g:0,c:0,m:0}, toast:0 });
+    for (const e of engines) e.world.trays.push({ id:e.world.nextId++, pos:-TRAY_W/2, counts:Array(N_DISP).fill(0), toast:0 });
   }
 
   // ---------------------------------------------------------------
@@ -467,55 +488,58 @@
   // are the same compiled module, selected by init(mode). This registry only
   // supplies their display names.
 
+  const MARSH_IDX = () => STATIONS.findIndex(s=>s.ingredient==="marshmallow");
   // ---- world step: apply a lane's controller outputs to that lane's physics ----
   function worldStep(w, c, out, dt){
     // belt physics: actual travel a bit less than commanded (slip) -> drift
     for (const tr of w.trays){
       let blocked=false;                                 // held by a CLOSED gate just ahead
-      for (let k=0;k<3;k++){
+      for (let k=0;k<N_DISP;k++){
         const gateX = STATIONS[k].pos;
-        const closed = !out.gate[k] || (k===1 && w.jamChoc);
+        const closed = !out.gate[k] || w.jam[k];         // jammed gate stays shut
         if (closed && tr.pos < gateX && tr.pos > gateX-70) blocked=true;
       }
       // the tunnel gate holds a tray at the mouth of the tunnel while it toasts
       // (belt keeps running underneath; the controller drops the gate to dwell).
-      if (!out.tunnelGateOpen && tr.pos > TUNNEL.entry-30 && tr.pos < TUNNEL.exit) blocked=true;
+      if (TUNNEL && !out.tunnelGateOpen && tr.pos > TUNNEL.entry-30 && tr.pos < TUNNEL.exit) blocked=true;
       tr._blocked=blocked;
       if (!blocked) tr.pos += out.belt * ACTUAL_SLIP * dt;
     }
     // dispensers: the actuator output must run long enough (DROP_AT) to actually
-    // drop a unit. Flaky "fail" misfires the FIRST attempt; a retry succeeds.
-    w.dispOn = w.dispOn||[0,0,0]; w.lastAtt = w.lastAtt||[0,0,0];
-    for (let k=0;k<3;k++){
+    // drop a unit. A "fail" fault misfires the FIRST attempt (a retry succeeds);
+    // "double" drops two. Fault + contents are indexed per dispenser.
+    w.dispOn = w.dispOn||Array(N_DISP).fill(0); w.lastAtt = w.lastAtt||Array(N_DISP).fill(0);
+    for (let k=0;k<N_DISP;k++){
       if (out.dispense[k]){
         w.dispOn[k] += dt*1000;
         if (w.dispOn[k]-w.lastAtt[k] >= DROP_AT){        // output has run long enough -> a drop attempt
           w.lastAtt[k]=w.dispOn[k];
           const wt = w.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
           if (wt){
-            wt._att=wt._att||[0,0,0]; wt._att[k]++;
-            const mode=w.disp[STATIONS[k].key];
+            wt._att=wt._att||Array(N_DISP).fill(0); wt._att[k]++;
+            const mode=w.faults[k];
             let add=1;
             if (mode==="double") add=2;
             else if (mode==="fail") add=(wt._att[k]===1)?0:1;
-            wt.counts[["g","c","m"][k]] += add;
+            wt.counts[k] += add;
             w.confirm[k]=add;
             const nm=STATIONS[k].name;
             if (add===0)      log(sim.t*1000, nm+": output ran "+DROP_AT+"ms but dispenser MISFIRED — nothing dropped on #"+wt.id, "crit");
             else if (add===2) log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dispenser DOUBLE-dropped (2) on #"+wt.id, "warn");
-            else              log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dropped a "+STATIONS[k].key+" on #"+wt.id, "evt");
+            else              log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dropped a "+STATIONS[k].ingredient+" on #"+wt.id, "evt");
           } else { w.confirm[k]=0; }
         }
       } else { w.dispOn[k]=0; w.lastAtt[k]=0; }
     }
     // tunnel physics: heater raises temp; a marshmallow in the beam accumulates
     // heat energy and toasts once it passes E_TARGET.
+    const mi = MARSH_IDX();
     const targetTemp = out.heater ? 205 : 20;
     w.temp += (targetTemp - w.temp) * Math.min(1, dt*0.9);
     w.heaterOn = out.heater;
-    if (w.heaterOn){
+    if (w.heaterOn && TUNNEL && mi>=0){
       for (const wt of w.trays){
-        if (wt.pos>=TUNNEL.entry-40 && wt.pos<=TUNNEL.exit+40 && wt.counts.m>0){
+        if (wt.pos>=TUNNEL.entry-40 && wt.pos<=TUNNEL.exit+40 && wt.counts[mi]>0){
           wt.energy=(wt.energy||0) + Math.max(0, w.temp-20)*dt;
           wt.toast=Math.min(1, wt.energy/E_TARGET);
           if (wt.energy>=E_TARGET && !wt._toasted){ wt._toasted=true;
@@ -531,13 +555,13 @@
 
   // ---- build controller inputs from a lane's actual world state ----
   function senseInputs(w){
-    const sense=[false,false,false];
-    for (let k=0;k<3;k++){
-      if (k===2 && w.blindMarsh) continue;                  // blinded sensor
+    const sense=Array(N_DISP).fill(false);
+    for (let k=0;k<N_DISP;k++){
+      if (w.blind[k]) continue;                             // blinded sensor
       sense[k] = w.trays.some(tr=>Math.abs(tr.pos-STATIONS[k].pos)<SENSE_WIN);
     }
-    const tunnel_entry = w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.entry)<SENSE_WIN);
-    const tunnel_exit  = w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.exit)<SENSE_WIN);
+    const tunnel_entry = TUNNEL ? w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.entry)<SENSE_WIN) : false;
+    const tunnel_exit  = TUNNEL ? w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.exit)<SENSE_WIN) : false;
     // `run` = operator/E-stop (always enabled here), separate from sim transport.
     return { sense, tunnel_entry, tunnel_exit, tunnel_temp:w.temp, confirm:w.confirm.slice(), run:true, t:sim.t*1000 };
   }
@@ -545,19 +569,19 @@
   // ---- per-lane signal history for the timeline (AdvantageScope-style) ----
   const HIST_MAX=9000;
   function pushSample(e,inp,out){
-    e.hist.push({ t:sim.t, s:[inp.sense[0],inp.sense[1],inp.sense[2]], te:inp.tunnel_entry, tx:inp.tunnel_exit,
-                  temp:e.world.temp, belt:out.belt, g:[out.gate[0],out.gate[1],out.gate[2]],
-                  d:[out.dispense[0],out.dispense[1],out.dispense[2]], h:out.heater });
+    e.hist.push({ t:sim.t, s:inp.sense.slice(), te:inp.tunnel_entry, tx:inp.tunnel_exit,
+                  temp:e.world.temp, belt:out.belt, g:out.gate.slice(),
+                  d:out.dispense.slice(), h:out.heater });
     if (e.hist.length>HIST_MAX) e.hist.shift();
   }
-  // count each finished tray as a good s'more (exactly 1·1·1) or mis-filled/lost
+  // a finished tray is a good s'more iff every dispenser placed exactly 1 unit
   function tally(e){
     for (const tr of e.ctrl.tracks){
       if ((tr.status==="done"||tr.status==="lost") && !e.tallied[tr.id]){
         e.tallied[tr.id]=true;
         if (tr.status==="lost"){ e.bad++; continue; }
         const wt = nearestWorld(e.world, tr.estPos);
-        const ok = wt && wt.counts.g===1 && wt.counts.c===1 && wt.counts.m===1;
+        const ok = wt && wt.counts.length===N_DISP && wt.counts.every(c=>c===1);
         ok ? e.good++ : e.bad++;
       }
     }
@@ -635,8 +659,8 @@
       ctx.fillStyle=C.muted; ctx.font="600 10px "+MONO; ctx.textAlign="center";
       ctx.fillText(st.name, sx, by-124);
       // gate (bar just downstream of the sense point)
-      const gx=sx+34, open=ctrl.out.gate[k] && !(k===1&&world.jamChoc);
-      ctx.strokeStyle = (k===1&&world.jamChoc)?C.crit:(open?C.faint:C.warn); ctx.lineWidth=3;
+      const gx=sx+34, jammed=world.jam[k], open=ctrl.out.gate[k] && !jammed;
+      ctx.strokeStyle = jammed?C.crit:(open?C.faint:C.warn); ctx.lineWidth=3;
       ctx.beginPath();
       if (open){ ctx.moveTo(gx,by-beltH/2-2); ctx.lineTo(gx,by-beltH/2-16); }   // raised
       else { ctx.moveTo(gx,by-beltH/2-2); ctx.lineTo(gx,by+beltH/2-6); }        // lowered/blocking
@@ -646,7 +670,7 @@
       ctx.fillStyle = active?C.good:"rgba(255,255,255,.14)";
       ctx.beginPath(); ctx.arc(sx, by+beltH/2+16, 4.5, 0, 7); ctx.fill();
       if (active){ ctx.strokeStyle="rgba(87,192,138,.5)"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(sx,by+beltH/2+11); ctx.lineTo(sx,by+2); ctx.stroke(); }
-      if (k===2 && world.blindMarsh){ ctx.fillStyle=C.crit; ctx.font="600 9px "+MONO; ctx.fillText("BLIND", sx, by+beltH/2+34); }
+      if (world.blind[k]){ ctx.fillStyle=C.crit; ctx.font="600 9px "+MONO; ctx.fillText("BLIND", sx, by+beltH/2+34); }
     }
 
     // tunnel
@@ -695,10 +719,14 @@
     let y=topY-6;
     const layer=(h,color,inset)=>{ y-=h; ctx.fillStyle=color; roundRect(cx-TRAY_W/2+inset, y, TRAY_W-2*inset, h, 2); ctx.fill();
       ctx.strokeStyle="rgba(0,0,0,.22)"; ctx.lineWidth=.5; ctx.stroke(); };
-    // rendered from ACTUAL contents: a failed dispense leaves a gap, a double stacks twice
-    for (let i=0;i<tr.counts.g;i++) layer(9, C.graham, 4);
-    for (let i=0;i<tr.counts.c;i++) layer(7, C.choc, 6);
-    for (let i=0;i<tr.counts.m;i++) layer(11, lerpColor(C.marsh, C.toast, tr.toast||0), 5);
+    // rendered from ACTUAL contents in belt/dispense order: a failed dispense
+    // leaves a gap, a double stacks twice, the post-tunnel graham caps the top.
+    const H = { graham:9, chocolate:7, marshmallow:11 }, INSET = { graham:4, chocolate:6, marshmallow:5 };
+    for (let k=0;k<N_DISP;k++){
+      const st=STATIONS[k], col = st.ingredient==="marshmallow" ? lerpColor(C.marsh, C.toast, tr.toast||0) : st.color;
+      const h = H[st.ingredient]||8, inset = INSET[st.ingredient]!=null?INSET[st.ingredient]:5;
+      for (let i=0;i<(tr.counts[k]||0);i++) layer(h, col, inset);
+    }
     // id tag
     ctx.fillStyle=C.muted; ctx.font="600 9px "+MONO; ctx.textAlign="center";
     ctx.fillText("#"+tr.id, cx, topY-6+11);
@@ -718,12 +746,16 @@
   function setTL(t){ tlx=t.ctx; TW=t.tw; TH=t.th; }
   function rgba(hex,a){ const p=hx(hex); return `rgba(${p[0]},${p[1]},${p[2]},${a})`; }
   // gates shown as CLOSED=high (the informative pulse); sensors/heater raw.
-  const TL_LANES=[
-    {l:"sense·G", g:s=>s.s[0],  c:C.good }, {l:"sense·C", g:s=>s.s[1],  c:C.good }, {l:"sense·M", g:s=>s.s[2], c:C.good},
-    {l:"tun·in",  g:s=>s.te,    c:C.good }, {l:"tun·out", g:s=>s.tx,    c:C.good },
-    {l:"gate·G ↓",g:s=>!s.g[0], c:C.teal }, {l:"gate·C ↓",g:s=>!s.g[1], c:C.teal }, {l:"gate·M ↓",g:s=>!s.g[2],c:C.teal},
-    {l:"heater",  g:s=>s.h,     c:C.ember}
-  ];
+  // Rebuilt per layout: one sense lane + one gate lane per dispenser, tunnel, heater.
+  let TL_LANES=[];
+  function buildTimelineLanes(){
+    const abbr = id => id.toUpperCase();
+    TL_LANES = [];
+    STATIONS.forEach((st,k)=> TL_LANES.push({ l:"sense·"+abbr(st.id), g:s=>s.s[k], c:C.good }));
+    if (TUNNEL){ TL_LANES.push({ l:"tun·in", g:s=>s.te, c:C.good }, { l:"tun·out", g:s=>s.tx, c:C.good }); }
+    STATIONS.forEach((st,k)=> TL_LANES.push({ l:"gate·"+abbr(st.id)+" ↓", g:s=>!s.g[k], c:C.teal }));
+    TL_LANES.push({ l:"heater", g:s=>s.h, c:C.ember });
+  }
   function drawTimeline(history){
     tlx.clearRect(0,0,TW,TH);
     const LG=68, RG=10, top=6;
@@ -758,7 +790,7 @@
     const dy=DY+TL_LANES.length*laneH;
     tlx.fillStyle=C.muted; tlx.textAlign="right"; tlx.font="9px "+MONO; tlx.fillText("dispense",LG-6,dy+laneH*0.7);
     tlx.strokeStyle=rgba(C.faint,.16); tlx.beginPath(); tlx.moveTo(LG,dy+laneH-1); tlx.lineTo(TW-RG,dy+laneH-1); tlx.stroke();
-    for(let i=1;i<history.length;i++) for(let k=0;k<3;k++){ if(history[i].d[k]&&!history[i-1].d[k]){ tlx.strokeStyle=STATIONS[k].color; tlx.lineWidth=2.5; const x=xFor(history[i].t); tlx.beginPath(); tlx.moveTo(x,dy+3); tlx.lineTo(x,dy+laneH-2); tlx.stroke(); } }
+    for(let i=1;i<history.length;i++) for(let k=0;k<N_DISP;k++){ if(history[i].d[k]&&!history[i-1].d[k]){ tlx.strokeStyle=STATIONS[k].color; tlx.lineWidth=2.5; const x=xFor(history[i].t); tlx.beginPath(); tlx.moveTo(x,dy+3); tlx.lineTo(x,dy+laneH-2); tlx.stroke(); } }
     // now cursor
     tlx.strokeStyle=C.teal; tlx.lineWidth=1; tlx.beginPath(); tlx.moveTo(xFor(t1),top); tlx.lineTo(xFor(t1),TH-12); tlx.stroke();
   }
@@ -785,12 +817,12 @@
     const e=engines[0]; activate(e); liveInputs=senseInputs(e.world);
     setCanvas(TGT.main); drawLine(); setTL(TLT.single); drawTimeline(e.hist);
     updateTopbar(e);
-    setIO("in-s0",liveInputs.sense[0]); setIO("in-s1",liveInputs.sense[1]); setIO("in-s2",liveInputs.sense[2]);
-    setIO("in-te",liveInputs.tunnel_entry); setIO("in-tx",liveInputs.tunnel_exit);
-    $("in-temp").textContent=Math.round(liveInputs.tunnel_temp)+"°"; $("in-temp").className="val"+(e.world.heaterOn?" hot":"");
+    for (let k=0;k<N_DISP;k++) setIO("in-s"+k, liveInputs.sense[k]);
+    if (TUNNEL){ setIO("in-te",liveInputs.tunnel_entry); setIO("in-tx",liveInputs.tunnel_exit);
+      $("in-temp").textContent=Math.round(liveInputs.tunnel_temp)+"°"; $("in-temp").className="val"+(e.world.heaterOn?" hot":""); }
     $("out-belt").textContent=Math.round(e.ctrl.out.belt);
-    for (let k=0;k<3;k++){ const el=$("out-g"+k); const jam=(k===1&&e.world.jamChoc); el.textContent=jam?"JAM":(e.ctrl.out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(e.ctrl.out.gate[k]?"":" off")); }
-    const disp = e.ctrl.out.dispense.map((d,i)=>d?STATIONS[i].key:null).filter(Boolean);
+    for (let k=0;k<N_DISP;k++){ const el=$("out-g"+k); if(!el) continue; const jam=e.world.jam[k]; el.textContent=jam?"JAM":(e.ctrl.out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(e.ctrl.out.gate[k]?"":" off")); }
+    const disp = e.ctrl.out.dispense.map((d,i)=>d?STATIONS[i].id:null).filter(Boolean);
     $("out-disp").textContent = disp.length?disp.join(","):"—"; $("out-disp").className="val"+(disp.length?" on":" off");
     $("out-heat").textContent = e.ctrl.out.heater?"ON":"off"; $("out-heat").className="val"+(e.ctrl.out.heater?" hot":" off");
     drawTrays(); drawLog(e.log, "log");
@@ -819,23 +851,24 @@
     const rows=$("trayRows");
     const list = ctrl.tracks;
     if (!list.length){ rows.innerHTML='<tr><td colspan="5" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr>'; return; }
-    const KEY=["g","c","m"];
     const dot=(t,wt,i)=>{
-      const attempted = t.stage>i;
-      const act = wt ? wt.counts[KEY[i]] : (attempted?Math.max(1,t.placed[i]):0);
+      const st=STATIONS[i];
+      const attempted = t.stage > st.stage;                 // this dispenser's step is done
+      const act = wt ? (wt.counts[i]||0) : (attempted?Math.max(1,t.placed[i]):0);
       let col="#4a4139";
       if (attempted) col = act===0 ? "#e2493a" : (act===1 ? "#57c08a" : "#f0c24a");
       const lbl = act>=2 ? act : "";
-      return `<span title="${KEY[i]}: believed ${t.placed[i]}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
+      return `<span title="${st.id} (${st.ingredient}): believed ${t.placed[i]}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
     };
     rows.innerHTML = list.map(t=>{
       const wt=nearestWorld(world, t.estPos);
       const drift = wt ? (t.estPos-wt.pos) : null;
       const dcls = drift!=null && Math.abs(drift)>40?"drift-crit":(drift!=null&&Math.abs(drift)>18?"drift-hi":"");
       const stat={moving:"moving",held:"held",toasting:"toast",done:"done",lost:"lost"}[t.status]||t.status;
+      const dots = STATIONS.map((_,i)=>dot(t,wt,i)).join("");
       return `<tr>
         <td>#${t.id}</td>
-        <td style="white-space:nowrap">${dot(t,wt,0)}${dot(t,wt,1)}${dot(t,wt,2)}</td>
+        <td style="white-space:nowrap">${dots}</td>
         <td class="num">${t.estPos.toFixed(0)}</td>
         <td class="num ${dcls}">${drift!=null?(drift>=0?"+":"")+drift.toFixed(0):"—"}</td>
         <td><span class="tag ${t.status==="toasting"?"toast":t.status}">${stat}</span></td>
@@ -860,19 +893,58 @@
     requestAnimationFrame(frame);
   }
 
+  // ---- generated per-layout UI: I/O contract rows + fault buttons ----
+  function ioRow(lbl,id,val,cls){ return `<div class="io-row"><span class="lbl">${lbl}</span><span class="val ${cls||""}" id="${id}">${val}</span></div>`; }
+  function buildIORows(){
+    let ins = STATIONS.map((s,k)=>ioRow(`sense[${s.id}]`,`in-s${k}`,"0","off")).join("");
+    if (TUNNEL) ins += ioRow("tunnel_entry","in-te","0","off")+ioRow("tunnel_exit","in-tx","0","off")+ioRow("tunnel_temp","in-temp","20&deg;","");
+    $("io-inputs").innerHTML = ins;
+    let outs = ioRow("belt_speed","out-belt","0","");
+    outs += STATIONS.map((s,k)=>ioRow(`gate[${s.id}]`,`out-g${k}`,"open","")).join("");
+    outs += ioRow("dispense[·]","out-disp","—","off");
+    if (TUNNEL) outs += ioRow("heater","out-heat","off","off");
+    $("io-outputs").innerHTML = outs;
+  }
+  function buildFaultUI(){
+    const host=$("faultBtns"); if(!host) return;
+    const parts = STATIONS.map((s,k)=>`<button class="btn" data-fault="disp" data-k="${k}" aria-pressed="false" title="Cycle ${s.id} dispenser: ok → FAIL (misfire) → DOUBLE">◇ ${s.id}</button>`);
+    const mi=STATIONS.findIndex(s=>s.ingredient==="marshmallow"), ci=STATIONS.findIndex(s=>s.ingredient==="chocolate");
+    if(mi>=0) parts.push(`<button class="btn" data-fault="blind" data-k="${mi}" aria-pressed="false" title="Blind the ${STATIONS[mi].id} sensor — controller must dead-reckon">◎ blind ${STATIONS[mi].id}</button>`);
+    if(ci>=0) parts.push(`<button class="btn" data-fault="jam" data-k="${ci}" aria-pressed="false" title="Jam the ${STATIONS[ci].id} gate shut — tray gets stuck">🔒 jam ${STATIONS[ci].id}</button>`);
+    host.innerHTML = parts.join("");
+    host.querySelectorAll("button").forEach(b=>b.addEventListener("click", onFault));
+  }
+  function onFault(ev){
+    const b=ev.currentTarget, kind=b.dataset.fault, k=+b.dataset.k, st=STATIONS[k];
+    if(kind==="disp"){
+      const cur=engines[0].world.faults[k], next = cur==="ok"?"fail":(cur==="fail"?"double":"ok");
+      applyAll(w=>w.faults[k]=next); b.setAttribute("aria-pressed", next!=="ok");
+      b.textContent = next==="ok"?`◇ ${st.id}`:(next==="fail"?`✕ ${st.id} FAIL`:`✚ ${st.id} ×2`);
+      log(sim.t*1000, `${st.id} dispenser → ${next==="ok"?"restored":next.toUpperCase()}`, "warn");
+    } else if(kind==="blind"){
+      const on=!engines[0].world.blind[k]; applyAll(w=>w.blind[k]=on); b.setAttribute("aria-pressed",on);
+      log(sim.t*1000, `${st.id} sensor ${on?"BLINDED — controller must dead-reckon":"restored"}`, "warn");
+    } else if(kind==="jam"){
+      const on=!engines[0].world.jam[k]; applyAll(w=>w.jam[k]=on); b.setAttribute("aria-pressed",on);
+      log(sim.t*1000, `${st.id} gate ${on?"JAMMED shut":"freed"}`, "warn");
+    }
+  }
+
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
   $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
   $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run"; stepOnce(); });
   $("resetBtn").addEventListener("click", ()=>{ reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
-    ["failGBtn","dblCBtn","blindBtn","jamBtn"].forEach(id=>$(id).setAttribute("aria-pressed","false"));
-    log(0,"reset","") ; renderAll(); });
+    buildFaultUI(); log(0,"reset","") ; renderAll(); });
   $("injectBtn").addEventListener("click", ()=>{ injectTray(); log(sim.t*1000,"operator injected a tray at belt entry",""); });
   $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
-  $("failGBtn").addEventListener("click", e=>{ const on=engines[0].world.disp.graham!=="fail"; applyAll(w=>w.disp.graham=on?"fail":"ok"); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"graham dispenser "+(on?"set to FAIL (places 0)":"restored"),"warn"); });
-  $("dblCBtn").addEventListener("click", e=>{ const on=engines[0].world.disp.choc!=="double"; applyAll(w=>w.disp.choc=on?"double":"ok"); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
-  $("blindBtn").addEventListener("click", e=>{ const on=!engines[0].world.blindMarsh; applyAll(w=>w.blindMarsh=on); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"marshmallow sensor "+(on?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
-  $("jamBtn").addEventListener("click", e=>{ const on=!engines[0].world.jamChoc; applyAll(w=>w.jamChoc=on); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate gate "+(on?"JAMMED shut":"freed"),"warn"); });
+  async function switchLayout(name){
+    sim && (sim.playing=false); $("playBtn").innerHTML="▶ Run";
+    try { await loadLayout(name); }
+    catch(err){ console.error("layout load failed:", err); document.getElementById("wasmErr").style.display="block"; return; }
+    fitAll(); reset(); injectTray(); log(0, `layout → ${LAYOUT.title||name}`, ""); renderAll();
+  }
+  $("layoutSel").addEventListener("change", e=>switchLayout(e.target.value));
   function selectCtrl(mode){
     modeA=mode; $("playBtn").innerHTML="▶ Run";
     $("ctrlOpen").classList.toggle("ctrl-active", mode==="open");
@@ -895,11 +967,13 @@
   const APP=document.querySelector(".app"); APP.dataset.view="single";
   TGT.main=mkTarget("line",0.40); TGT.A=mkTarget("laneA",0.52); TGT.B=mkTarget("laneB",0.52);
   TLT.single=mkTL("tl",0); TLT.A=mkTL("laneA-tl",0.34); TLT.B=mkTL("laneB-tl",0.34);
+  $("layoutSel").innerHTML = LAYOUT_CHOICES.map(l=>`<option value="${l.name}">${l.title}</option>`).join("");
+  $("layoutSel").value = currentLayout;
   (async function boot(){
-    try { await loadWasm(); }                       // fetch + compile controller.wasm once
-    catch (err){ document.getElementById("wasmErr").style.display="block"; console.error("controller.wasm load failed:", err); return; }
+    try { await loadLayout(currentLayout); }        // fetch layout meta + compile its controller.wasm
+    catch (err){ document.getElementById("wasmErr").style.display="block"; console.error("layout load failed:", err); return; }
     fitAll(); reset(); injectTray();                // reset() builds per-lane wasm instances
-    log(0,"controller.wasm loaded — "+CONTROLLERS[modeA].name+" · press Run","");
+    log(0,`${LAYOUT.title} loaded — real WASM controller · press Run`,"");
     renderAll();
     requestAnimationFrame(frame);
   })();

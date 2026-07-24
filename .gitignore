@@ -19,9 +19,12 @@
 # Host build output
 build/
 
-# GitHub Pages app: the compiled controller is a build artifact (derived from
-# controller/src). Rebuild with `make app`; CI builds it fresh before deploy.
+# GitHub Pages app: compiled controllers + generated layout meta are build
+# artifacts (derived from controller/src + layouts). Rebuild with `make app`;
+# CI builds them fresh before deploy.
 docs/app/controller.wasm
+docs/app/wasm/
+docs/app/layouts/
 
 # Generated typed contract + layout meta (codegen from controller/layouts/*.json).
 # Source of truth is the layout JSON; regenerate with `make -C controller codegen`.

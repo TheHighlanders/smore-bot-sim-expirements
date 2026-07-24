@@ -235,7 +235,11 @@ operation.
 - Exact dispenser actuator (servo vs stepper vs solenoid) is abstracted to
   "dispense one unit" — revisit when hardware is chosen.
 - Toast model (time-at-temperature vs fixed dwell) is a placeholder in the mock.
-- Recipe is fixed (graham→choc→marshmallow); a configurable recipe is a later idea.
+- Recipe is fixed (graham→choc→marshmallow) in *this* doc; a **data-driven,
+  end-user-configurable layout** (add a post-tunnel graham cap, a smusher, 1–2
+  servos per station, per-lane layouts for A/B) is specced separately in
+  [LAYOUTS.md](LAYOUTS.md). That doc generalizes the fixed `[0..2]` §4 contract to
+  a layout descriptor + per-module channels.
 - Open: belt speed — fixed nominal vs. controller-varied? (Draft: controller sets a
   nominal speed and stops for safety; per-tray speed changes are out of scope now.)
 - Open: does a tray enter only when the operator injects one, or continuously?

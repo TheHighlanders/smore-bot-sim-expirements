@@ -154,6 +154,7 @@
   button.btn.primary { background:var(--teal); color:var(--teal-ink); border-color:var(--teal); }
   button.btn.primary:hover { background:#4bd0df; }
   button.btn[aria-pressed="true"] { border-color:var(--crit); color:var(--crit); background:rgba(226,73,58,.10); }
+  button.btn.ctrl-active { border-color:var(--teal); color:var(--teal); background:rgba(51,188,203,.12); }
   button.btn .ic { width:12px; height:12px; }
 
   input[type=range] { -webkit-appearance:none; appearance:none; height:4px; width:130px; border-radius:3px;
@@ -260,6 +261,11 @@
       <button class="btn" id="resetBtn" aria-label="Reset simulation">↺ Reset</button>
     </div>
     <div class="group">
+      <span class="glabel">Controller</span>
+      <button class="btn ctrl-sel ctrl-active" id="ctrlOpen" title="Assumes each dispense worked; ignores the confirm sensor">Open-loop</button>
+      <button class="btn ctrl-sel" id="ctrlClosed" title="Reads dispense_confirm; retries a miss, flags an over-fill">Closed-loop</button>
+    </div>
+    <div class="group">
       <span class="glabel">Sim&nbsp;speed</span>
       <input type="range" id="speed" min="0.25" max="4" step="0.25" value="1" aria-label="Simulation speed">
       <span class="speedval" id="speedVal">1.0×</span>
@@ -311,11 +317,11 @@
   const TOAST_MS = 3800;          // dwell in tunnel
 
   // ---- world (physics + sensor generation) ----
-  let world, ctrl, sim;
+  let world, ctrl, sim, ctrlMode="open";
   function reset(){
     world = { trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false, done:0,
-              disp:{graham:"ok",choc:"ok",marsh:"ok"}, _lastDisp:[false,false,false] };
-    ctrl  = makeController();
+              disp:{graham:"ok",choc:"ok",marsh:"ok"}, _lastDisp:[false,false,false], confirm:[0,0,0] };
+    ctrl  = makeController(ctrlMode);
     sim   = { t:0, tick:0, playing:false, speed:1, acc:0 };
     logLines.length = 0;
     history.length = 0;
@@ -335,96 +341,89 @@
   //  MOCK CONTROLLER  (stand-in for the WASM controller; REQUIREMENTS §4/§5/§6)
   //  Pure-ish: sees inputs, keeps its own estimate, emits outputs + log.
   // ---------------------------------------------------------------
-  function makeController(){
+  // Controller registry: each entry is a variant conforming to the §4 contract
+  // (tick(inputs,dt) -> outputs, plus exposed `tracks`). The harness can run any
+  // of them; this is the seam the real WASM controllers plug into.
+  const CONTROLLERS = {
+    open:   { name:"Open-loop",   blurb:"assumes each dispense worked; ignores the confirm sensor" },
+    closed: { name:"Closed-loop", blurb:"reads dispense_confirm; retries a miss, flags an over-fill" }
+  };
+  function makeController(mode){   // mode: "open" | "closed"
     return {
-      tracks:[],            // {id, estPos, stage, status, hold, dispenseAt}
-      nextId:1,
-      lastSense:[false,false,false],
+      mode,
+      tracks:[], nextId:1, lastSense:[false,false,false],
       out:{ belt:0, gate:[true,true,true], dispense:[false,false,false], heater:false },
 
       tick(inp, dt){
         const o = this.out;
         o.dispense = [false,false,false];
         o.belt = inp.run ? NOMINAL_SPEED : 0;
-        if (this.tracks.some(t=>t.status==="toasting")) o.belt = 0;   // hold: dwell in tunnel while toasting
+        if (this.tracks.some(t=>t.status==="toasting")) o.belt = 0;   // dwell in tunnel while toasting
 
-        // 1) dead-reckon every track that isn't being held
-        for (const tr of this.tracks){
-          if (tr.status === "moving") tr.estPos += o.belt * dt;
-        }
+        // 1) dead-reckon every moving track
+        for (const tr of this.tracks) if (tr.status==="moving") tr.estPos += o.belt*dt;
 
-        // 2) sensor rising edges -> register/correct a track (position snap)
+        // 2) sensor edges -> register/correct a track, then hold + start dispense
         for (let k=0;k<STATIONS.length;k++){
           const rise = inp.sense[k] && !this.lastSense[k];
           if (rise){
             let tr = this._nearest(STATIONS[k].pos);
-            if (!tr && k===0){                       // first sighting = new tray
-              tr = { id:this.nextId++, estPos:STATIONS[k].pos, stage:0, status:"moving", hold:false, dispenseAt:0, placed:[0,0,0] };
+            if (!tr && k===0){
+              tr = { id:this.nextId++, estPos:STATIONS[k].pos, stage:0, status:"moving", hold:-1, dispenseAt:0, placed:[0,0,0], retries:0 };
               this.tracks.push(tr);
               log(inp.t, "tray #"+tr.id+" detected at GRAHAM", "evt");
             }
             if (tr){
               const corr = STATIONS[k].pos - tr.estPos;
               tr.estPos = STATIONS[k].pos;           // snap (correct drift)
-              if (tr.stage === k){                   // needs this ingredient -> hold + dispense
-                o.gate[k] = false; tr.status = "held"; tr.hold = k;
-                tr.dispenseAt = inp.t + DISPENSE_MS;
-                o.dispense[k] = true;
-                tr.placed[k]++;                        // BELIEVED: assumes the pulse worked (open-loop)
-                log(inp.t, "hold #"+tr.id+" @ "+STATIONS[k].name+"  (drift "+corr.toFixed(0)+"mm corrected)", "evt");
+              if (tr.stage === k){
+                o.gate[k]=false; tr.status="held"; tr.hold=k; tr.retries=0; tr.dispenseAt=inp.t+DISPENSE_MS;
+                o.dispense[k]=true;
+                if (this.mode==="open") tr.placed[k]=1;   // BELIEVES the pulse worked
+                log(inp.t, "hold #"+tr.id+" @ "+STATIONS[k].name+" (drift "+corr.toFixed(0)+"mm corrected)", "evt");
               }
             }
           }
         }
         this.lastSense = inp.sense.slice();
 
-        // 3) service held trays: when dispense/settle done, advance stage + release
+        // 3) service held trays; closed-loop verifies via dispense_confirm
         for (const tr of this.tracks){
-          if (tr.status === "held" && inp.t >= tr.dispenseAt){
+          if (tr.status==="held" && inp.t>=tr.dispenseAt){
             const k = tr.hold;
-            tr.stage = k + 1;
-            o.gate[k] = true; tr.status = "moving"; tr.hold = -1;
+            if (this.mode==="closed"){
+              const c = inp.confirm[k];               // units the confirm sensor actually saw drop
+              if (c===0 && tr.retries<3){              // miss -> retry (stay held)
+                tr.retries++; o.dispense[k]=true; tr.dispenseAt=inp.t+DISPENSE_MS;
+                log(inp.t, "no drop confirmed @ "+STATIONS[k].name+" — retry "+tr.retries+" (#"+tr.id+")", "warn");
+                continue;
+              }
+              tr.placed[k] = c||0;                     // BELIEF = what was confirmed
+              if (c===0)      log(inp.t, STATIONS[k].name+" UNDER-FILLED after retries — flagged #"+tr.id, "crit");
+              else if (c>=2)  log(inp.t, STATIONS[k].name+" OVER-FILL detected — flagged #"+tr.id, "warn");
+            }
+            tr.stage=k+1; o.gate[k]=true; tr.status="moving"; tr.hold=-1;
             log(inp.t, "dispensed "+STATIONS[k].key+" -> release #"+tr.id, "evt");
           }
-          // keep a gate closed if a held tray still occupies it
         }
-        // gates that no held track owns default open
-        for (let k=0;k<3;k++){
-          if (!this.tracks.some(t=>t.status==="held" && t.hold===k)) o.gate[k]=true;
-          else o.gate[k]=false;
-        }
+        for (let k=0;k<3;k++) o.gate[k] = !this.tracks.some(t=>t.status==="held" && t.hold===k);
 
-        // 4) tunnel: heater on while a tray is toasting; done at exit
-        const toasting = this.tracks.some(t=>t.status==="toasting");
-        if (inp.tunnel_entry){
-          const tr = this._nearest(TUNNEL.entry);
-          if (tr && tr.stage===3 && tr.status==="moving"){ tr.status="toasting"; tr.toastEnd=inp.t+TOAST_MS;
-            log(inp.t,"toasting #"+tr.id+" in tunnel","evt"); }
-        }
-        for (const tr of this.tracks){
-          if (tr.status==="toasting" && inp.t>=tr.toastEnd){ tr.stage=4; tr.status="moving";
-            log(inp.t,"toast complete — release #"+tr.id,"evt"); }
-        }
+        // 4) tunnel: hold + toast, then release; done at exit
+        if (inp.tunnel_entry){ const tr=this._nearest(TUNNEL.entry);
+          if (tr && tr.stage===3 && tr.status==="moving"){ tr.status="toasting"; tr.toastEnd=inp.t+TOAST_MS; log(inp.t,"toasting #"+tr.id+" in tunnel","evt"); } }
+        for (const tr of this.tracks) if (tr.status==="toasting" && inp.t>=tr.toastEnd){ tr.stage=4; tr.status="moving"; log(inp.t,"toast complete — release #"+tr.id,"evt"); }
         o.heater = this.tracks.some(t=>t.status==="toasting");
-        if (inp.tunnel_exit){
-          const tr=this._nearest(TUNNEL.exit);
-          if (tr && tr.stage>=4 && tr.status!=="done"){ tr.status="done"; log(inp.t,"s'more #"+tr.id+" complete ✓","evt"); }
-        }
+        if (inp.tunnel_exit){ const tr=this._nearest(TUNNEL.exit);
+          if (tr && tr.stage>=4 && tr.status!=="done"){ tr.status="done"; log(inp.t,"s'more #"+tr.id+" complete ✓","evt"); } }
 
-        // 5) lost-tray watchdog: moving track that ran off the end w/o completing
-        for (const tr of this.tracks){
-          if (tr.status!=="done" && tr.status!=="lost" && tr.estPos > BELT_LEN+90){
-            tr.status="lost"; log(inp.t,"tray #"+tr.id+" LOST (no exit edge)","crit");
-          }
-        }
+        // 5) lost-tray watchdog
+        for (const tr of this.tracks) if (tr.status!=="done" && tr.status!=="lost" && tr.estPos>BELT_LEN+90){ tr.status="lost"; log(inp.t,"tray #"+tr.id+" LOST (no exit edge)","crit"); }
         return o;
       },
       _nearest(pos){
         let best=null, bd=1e9;
-        for (const tr of this.tracks){
-          if (tr.status==="done"||tr.status==="lost") continue;
-          const d=Math.abs(tr.estPos-pos); if (d<bd && d<120){ bd=d; best=tr; }
-        }
+        for (const tr of this.tracks){ if (tr.status==="done"||tr.status==="lost") continue;
+          const d=Math.abs(tr.estPos-pos); if (d<bd && d<120){ bd=d; best=tr; } }
         return best;
       }
     };
@@ -455,8 +454,11 @@
           const mode = world.disp[STATIONS[k].key];
           const add = mode==="fail"?0:(mode==="double"?2:1);
           wt.counts[["g","c","m"][k]] += add;
+          world.confirm[k] = add;                       // drop-confirm sensor: units actually placed
           if (mode==="fail")   log(sim.t*1000, STATIONS[k].name+" dispenser FAILED on #"+wt.id+" — 0 placed", "crit");
           if (mode==="double") log(sim.t*1000, STATIONS[k].name+" dispenser DOUBLE-fired on #"+wt.id+" — 2 placed", "warn");
+        } else {
+          world.confirm[k] = 0;                          // pulse with no tray present -> nothing dropped
         }
       }
     }
@@ -493,7 +495,7 @@
     // `run` is the operator/E-stop (machine enabled) — separate from the sim
     // transport (play/pause/step). For this demo the line is always enabled, so
     // stepping the clock still moves the belt.
-    return { sense, tunnel_entry, tunnel_exit, tunnel_temp:world.temp, run:true, t:sim.t*1000 };
+    return { sense, tunnel_entry, tunnel_exit, tunnel_temp:world.temp, confirm:world.confirm.slice(), run:true, t:sim.t*1000 };
   }
 
   // ---- signal history for the timeline (AdvantageScope-style) ----
@@ -747,12 +749,12 @@
     // one dot per ingredient: believed vs ACTUAL. green=ok, red=missing (dispense
     // failed), amber=double. The controller only knows `placed` (believed).
     const dot=(t,wt,i)=>{
-      const bel=t.placed[i];
-      const act = wt ? wt.counts[KEY[i]] : (bel>0?1:0);   // if tray gone, trust belief
-      let col="#4a4139";                                   // empty / not placed yet
-      if (bel>0 || act>0) col = act===1 ? "#57c08a" : (act===0 ? "#e2493a" : "#f0c24a");
+      const attempted = t.stage>i;                          // station processed by the controller
+      const act = wt ? wt.counts[KEY[i]] : (attempted?Math.max(1,t.placed[i]):0);
+      let col="#4a4139";                                    // pending
+      if (attempted) col = act===0 ? "#e2493a" : (act===1 ? "#57c08a" : "#f0c24a");
       const lbl = act>=2 ? act : "";
-      return `<span title="${KEY[i]}: believed ${bel}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
+      return `<span title="${KEY[i]}: believed ${t.placed[i]}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
     };
     rows.innerHTML = list.map(t=>{
       const wt=nearestWorld(t.estPos);
@@ -790,19 +792,29 @@
   // =================== CONTROLS ===================
   $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
   $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run"; stepOnce(); });
-  $("resetBtn").addEventListener("click", ()=>{ reset(); $("playBtn").innerHTML="▶ Run";
-    ["failGBtn","dblCBtn","blindBtn","jamBtn"].forEach(id=>$(id).setAttribute("aria-pressed","false")); });
+  $("resetBtn").addEventListener("click", ()=>{ reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
+    ["failGBtn","dblCBtn","blindBtn","jamBtn"].forEach(id=>$(id).setAttribute("aria-pressed","false"));
+    log(0,"reset — controller = "+CONTROLLERS[ctrlMode].name,""); });
   $("injectBtn").addEventListener("click", ()=>{ injectTray(); if(!logLines.length||true) log(sim.t*1000,"operator injected a tray at belt entry",""); });
   $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
   $("failGBtn").addEventListener("click", e=>{ const on=world.disp.graham!=="fail"; world.disp.graham=on?"fail":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"graham dispenser "+(on?"set to FAIL (places 0)":"restored"),"warn"); });
   $("dblCBtn").addEventListener("click", e=>{ const on=world.disp.choc!=="double"; world.disp.choc=on?"double":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
   $("blindBtn").addEventListener("click", e=>{ world.blindMarsh=!world.blindMarsh; e.currentTarget.setAttribute("aria-pressed",world.blindMarsh); log(sim.t*1000,"marshmallow sensor "+(world.blindMarsh?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
   $("jamBtn").addEventListener("click", e=>{ world.jamChoc=!world.jamChoc; e.currentTarget.setAttribute("aria-pressed",world.jamChoc); log(sim.t*1000,"chocolate gate "+(world.jamChoc?"JAMMED shut":"freed"),"warn"); });
+  function selectCtrl(mode){
+    ctrlMode=mode; $("playBtn").innerHTML="▶ Run";
+    $("ctrlOpen").classList.toggle("ctrl-active", mode==="open");
+    $("ctrlClosed").classList.toggle("ctrl-active", mode==="closed");
+    reset(); injectTray();
+    log(0, "controller = "+CONTROLLERS[mode].name+" ("+CONTROLLERS[mode].blurb+")", "");
+  }
+  $("ctrlOpen").addEventListener("click", ()=>selectCtrl("open"));
+  $("ctrlClosed").addEventListener("click", ()=>selectCtrl("closed"));
   window.addEventListener("resize", ()=>{ fitCanvas(); fitTL(); renderAll(); });
 
   // ---- boot: prime with one tray (demo one; architected for many) ----
   fitCanvas(); fitTL(); reset(); injectTray();
-  log(0,"line ready — press Run","");
+  log(0,"line ready — controller = "+CONTROLLERS[ctrlMode].name+" · press Run","");
   renderAll(); drawLog();
   requestAnimationFrame(frame);
 })();

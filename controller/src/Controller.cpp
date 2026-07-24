@@ -56,9 +56,9 @@ void Controller::update() {
             if (tr) {
                 float corr = layout::DISP[k].pos_mm - tr->est_pos_mm;
                 tr->est_pos_mm = layout::DISP[k].pos_mm;       // snap: correct drift
-                if (tr->stage == k) {
+                if (tr->stage == layout::DISP[k].stage) {      // this dispenser is next in the recipe
                     tr->status = Held; tr->hold = k; tr->retries = 0; tr->phase_until = now + cfg_.dispense_ms;
-                    say("evt", "saw #%d at station %d (drift %+.0fmm) - closing gate, running dispenser", tr->id, k, corr);
+                    say("evt", "saw #%d at %s (drift %+.0fmm) - closing gate, running dispenser", tr->id, layout::DISP[k].id, corr);
                 }
             }
         }
@@ -82,9 +82,9 @@ void Controller::update() {
                 else             say("evt",  "station %d confirmed on #%d - opening gate", k, tr.id);
             } else {
                 tr.placed[k] = 1;                              // believes it placed (ran output long enough)
-                say("evt", "ran station %d dispenser %ums -> assuming placed, opening gate for #%d", k, cfg_.dispense_ms, tr.id);
+                say("evt", "ran %s dispenser %ums -> assuming placed, opening gate for #%d", layout::DISP[k].id, cfg_.dispense_ms, tr.id);
             }
-            tr.stage = k + 1; tr.status = Moving; tr.hold = -1;
+            tr.stage = layout::DISP[k].stage + 1; tr.status = Moving; tr.hold = -1;
         }
     }
     // sustained dispenser output during a hold; gate closed only where held
@@ -98,24 +98,31 @@ void Controller::update() {
     //    other trays keep working). Release when the dwell has elapsed.
     if (tEntry) {
         Track* tr = nearest(layout::TUNNEL_ENTRY_MM);
-        if (tr && tr->stage == 3 && tr->status == Moving) {
+        if (tr && tr->stage == layout::TUNNEL_STAGE && tr->status == Moving) {
             tr->status = Toasting; tr->phase_until = now + cfg_.toast_ms;
             say("evt", "#%d reached tunnel - heater ON, closing tunnel gate to toast", tr->id);
         }
     }
     for (auto& tr : tracks_)
         if (tr.status == Toasting && now >= tr.phase_until) {
-            tr.stage = 4; tr.status = Moving;
+            tr.stage = layout::TUNNEL_STAGE + 1; tr.status = Moving;
             say("evt", "tunnel dwell %ums elapsed - opening tunnel gate, releasing #%d", cfg_.toast_ms, tr.id);
         }
     bool toasting = false;
     for (auto& tr : tracks_) if (tr.status == Toasting) toasting = true;
     const bool heater = toasting;
     const bool tunnel_gate_open = !toasting;         // closed (hold) while toasting
-    if (tExit) {
+    if (tExit) {                                     // exit-beam position correction (post-toast)
         Track* tr = nearest(layout::TUNNEL_EXIT_MM);
-        if (tr && tr->stage >= 4 && tr->status != Done) { tr->status = Done; say("evt", "s'more #%d complete", tr->id); }
+        if (tr) tr->est_pos_mm = layout::TUNNEL_EXIT_MM;
     }
+
+    // completion: a tray that has finished every assembly stage is a s'more.
+    // (With a post-tunnel cap this is the cap dispense, not the tunnel exit.)
+    for (auto& tr : tracks_)
+        if (tr.status == Moving && tr.stage >= layout::N_STAGES) {
+            tr.status = Done; say("evt", "s'more #%d complete", tr.id);
+        }
 
     // 5) lost-tray watchdog
     for (auto& tr : tracks_)

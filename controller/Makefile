@@ -27,10 +27,10 @@ codegen:
 
 host-test: test-subsystems test-controller
 
-## integration: build controller.wasm, then drive it through the JS<->WASM
-## boundary against a simulated world (needs node) — the visualizer's path.
+## integration: build controller.wasm for LAYOUT, then drive it through the
+## JS<->WASM boundary against a world built from that layout's meta (needs node).
 integration: wasm
-	node test/integration.mjs
+	LAYOUT=$(LAYOUT) node test/integration.mjs
 
 test-subsystems: codegen
 	@mkdir -p build

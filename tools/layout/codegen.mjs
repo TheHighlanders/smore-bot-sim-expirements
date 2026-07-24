@@ -58,23 +58,34 @@ export function parseLayout(raw) {
   });
   if (lastPos > beltLen) throw new Error(`last module at ${lastPos}mm is past belt end ${beltLen}mm`);
 
+  // Assembly STAGES in belt order: each dispenser / tunnel / smusher is one step
+  // a tray must complete in sequence. A sensor-only module consumes no stage.
+  // `stage` is what makes the controller topology-agnostic: it holds dispenser d
+  // when tray.stage == d.stage, regardless of whether d is before or after the
+  // tunnel (the post-tunnel cap just gets a higher stage than the tunnel).
+  const stageOf = {};
+  let step = 0;
+  for (const m of modules) if (["dispenser", "tunnel", "smusher"].includes(m.type)) stageOf[m.id] = step++;
+  const nStages = step;
+
   const dispensers = modules.filter(m => m.type === "dispenser").map(m => ({
     id: m.id, pos_mm: m.pos_mm, ingredient: m.ingredient,
     servos: m.servos == null ? 1 : +m.servos,
     confirm: m.confirm !== false,
     role: m.role || "base",
     after_tunnel: tunnelIndex >= 0 && m._index > tunnelIndex,
+    stage: stageOf[m.id],
   }));
-  const tunnel = tunnelIndex >= 0 ? { id: modules[tunnelIndex].id, pos_mm: modules[tunnelIndex].pos_mm, exit_mm: +modules[tunnelIndex].exit_mm } : null;
+  const tunnel = tunnelIndex >= 0 ? { id: modules[tunnelIndex].id, pos_mm: modules[tunnelIndex].pos_mm, exit_mm: +modules[tunnelIndex].exit_mm, stage: stageOf[modules[tunnelIndex].id] } : null;
   const smusherM = modules.find(m => m.type === "smusher");
-  const smusher = smusherM ? { id: smusherM.id, pos_mm: smusherM.pos_mm, dwell_ms: smusherM.dwell_ms == null ? 400 : +smusherM.dwell_ms, confirm: smusherM.confirm !== false } : null;
+  const smusher = smusherM ? { id: smusherM.id, pos_mm: smusherM.pos_mm, dwell_ms: smusherM.dwell_ms == null ? 400 : +smusherM.dwell_ms, confirm: smusherM.confirm !== false, stage: stageOf[smusherM.id] } : null;
 
   const maxServos = dispensers.reduce((a, d) => Math.max(a, d.servos), 1);
   const ingredients = [...new Set(dispensers.map(d => d.ingredient))]; // dedup, first-seen order
 
   return {
     name, title: raw.title || name, description: raw.description || "",
-    beltLen, speed, modules, dispensers, tunnel, smusher, maxServos, ingredients,
+    beltLen, speed, modules, dispensers, tunnel, smusher, maxServos, ingredients, nStages,
     hasTunnel: !!tunnel, hasSmusher: !!smusher,
   };
 }
@@ -159,16 +170,18 @@ ${outF.map(cFieldDecl).join("\n")}
 export function emitLayoutHeader(L) {
   const ing = L.ingredients.map((k, i) => `${INGREDIENT_ENUM[k]}${i < L.ingredients.length - 1 ? "," : ""}`).join(" ");
   const disp = L.dispensers.map(d =>
-    `    { "${d.id}", ${d.pos_mm.toFixed(1)}f, Ingredient::${INGREDIENT_ENUM[d.ingredient]}, ${d.servos}, ${d.confirm}, ${d.after_tunnel}, ${d.role === "cap"} },`
+    `    { "${d.id}", ${d.pos_mm.toFixed(1)}f, Ingredient::${INGREDIENT_ENUM[d.ingredient]}, ${d.servos}, ${d.confirm}, ${d.after_tunnel}, ${d.role === "cap"}, ${d.stage} },`
   ).join("\n");
   let tunnel = "";
   if (L.hasTunnel) tunnel =
     `constexpr float TUNNEL_ENTRY_MM = ${L.tunnel.pos_mm.toFixed(1)}f;\n` +
-    `constexpr float TUNNEL_EXIT_MM  = ${L.tunnel.exit_mm.toFixed(1)}f;\n`;
+    `constexpr float TUNNEL_EXIT_MM  = ${L.tunnel.exit_mm.toFixed(1)}f;\n` +
+    `constexpr int   TUNNEL_STAGE    = ${L.tunnel.stage};\n`;
   let smusher = "";
   if (L.hasSmusher) smusher =
-    `constexpr float    SMUSHER_POS_MM  = ${L.smusher.pos_mm.toFixed(1)}f;\n` +
-    `constexpr uint32_t SMUSHER_DWELL_MS = ${L.smusher.dwell_ms};\n`;
+    `constexpr float    SMUSHER_POS_MM   = ${L.smusher.pos_mm.toFixed(1)}f;\n` +
+    `constexpr uint32_t SMUSHER_DWELL_MS = ${L.smusher.dwell_ms};\n` +
+    `constexpr int      SMUSHER_STAGE    = ${L.smusher.stage};\n`;
   return `${banner(L, "Layout.h")}#pragma once
 #include <cstdint>
 
@@ -179,6 +192,7 @@ constexpr const char* NAME = "${L.name}";
 
 // ---- geometry & counts (compile-time; the controller is bound to these) ----
 constexpr int   N_DISP      = ${L.dispensers.length};
+constexpr int   N_STAGES    = ${L.nStages};   // assembly steps a tray completes in order
 constexpr int   MAX_SERVOS  = ${L.maxServos};
 constexpr bool  HAS_TUNNEL  = ${L.hasTunnel};
 constexpr bool  HAS_SMUSHER = ${L.hasSmusher};
@@ -188,7 +202,7 @@ constexpr float NOMINAL_SPEED = ${L.speed.toFixed(1)}f;
 enum class Ingredient : uint8_t { ${ing} };
 
 // One dispenser's fixed spec. \`after_tunnel\` = fires downstream of the tunnel
-// (e.g. the graham cap); \`is_cap\` = role hint for labels/policy.
+// (e.g. the graham cap); \`is_cap\` = role hint; \`stage\` = its step in belt order.
 struct DispSpec {
     const char* id;
     float       pos_mm;
@@ -197,6 +211,7 @@ struct DispSpec {
     bool        has_confirm;
     bool        after_tunnel;
     bool        is_cap;
+    int         stage;
 };
 
 constexpr DispSpec DISP[N_DISP] = {

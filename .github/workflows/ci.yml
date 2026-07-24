@@ -34,8 +34,10 @@ jobs:
         run: make controller-test
       - name: Fetch wasi-sdk (GitHub runners have no TLS proxy)
         run: ./tools/get-wasi-sdk.sh
-      - name: WASM integration test (real controller.wasm ↔ JS world)
-        run: make -C controller integration
+      - name: WASM integration test — classic3 layout
+        run: make -C controller integration LAYOUT=classic3
+      - name: WASM integration test — sandwich layout (post-tunnel graham cap)
+        run: make -C controller integration LAYOUT=sandwich
 
   # ---- Build the base-controller custom chip -> WASM ----
   build-chip:

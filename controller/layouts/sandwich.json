@@ -1,0 +1,13 @@
+{
+  "name": "sandwich",
+  "title": "Sandwich line (post-tunnel graham cap)",
+  "description": "Graham -> chocolate -> marshmallow -> TOAST -> top graham cap. A real s'more is a sandwich, so a fourth dispenser fires AFTER the tunnel. This is the layout the fixed 3-slot contract could not express (LAYOUTS.md L-4).",
+  "belt": { "length_mm": 1500, "nominal_speed_mm_s": 110 },
+  "modules": [
+    { "id": "g1",  "type": "dispenser", "pos_mm": 300,  "ingredient": "graham",      "servos": 1, "confirm": true },
+    { "id": "c1",  "type": "dispenser", "pos_mm": 600,  "ingredient": "chocolate",   "servos": 1, "confirm": true },
+    { "id": "m1",  "type": "dispenser", "pos_mm": 900,  "ingredient": "marshmallow", "servos": 1, "confirm": true },
+    { "id": "tun", "type": "tunnel",    "pos_mm": 1050, "exit_mm": 1185 },
+    { "id": "g2",  "type": "dispenser", "pos_mm": 1350, "ingredient": "graham",      "servos": 1, "confirm": true, "role": "cap" }
+  ]
+}

@@ -34,7 +34,7 @@ __attribute__((export_name("tick"))) void tick() { if (g_ctrl) g_ctrl->update();
 __attribute__((export_name("track_count"))) int track_count() {
     return g_ctrl ? (int)g_ctrl->tracks().size() : 0;
 }
-// field: 0=id, 1=est_pos_mm, 2=stage, 3=status, 4..6=placed[0..2]
+// field: 0=id, 1=est_pos_mm, 2=stage, 3=status, 4..(4+N_DISP-1)=placed[0..N_DISP-1]
 __attribute__((export_name("track_field"))) float track_field(int i, int field) {
     if (!g_ctrl || i < 0 || i >= (int)g_ctrl->tracks().size()) return 0.f;
     const Track& t = g_ctrl->tracks()[i];
@@ -43,8 +43,9 @@ __attribute__((export_name("track_field"))) float track_field(int i, int field) 
         case 1: return t.est_pos_mm;
         case 2: return (float)t.stage;
         case 3: return (float)t.status;
-        case 4: case 5: case 6: return (float)t.placed[field-4];
-        default: return 0.f;
+        default:
+            if (field >= 4 && field < 4 + layout::N_DISP) return (float)t.placed[field - 4];
+            return 0.f;
     }
 }
 

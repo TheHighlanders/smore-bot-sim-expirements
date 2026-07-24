@@ -208,8 +208,8 @@
         <div class="panel-hd"><h2>Tray tracking</h2><span class="hint">est vs actual</span></div>
         <div style="overflow-x:auto">
           <table class="grid" id="trayTable">
-            <thead><tr><th>ID</th><th>Stage</th><th class="num">Actual</th><th class="num">Est</th><th class="num">Drift</th><th>Status</th></tr></thead>
-            <tbody id="trayRows"><tr><td colspan="6" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr></tbody>
+            <thead><tr><th>ID</th><th>Fill<span style="color:var(--muted-2)"> g·c·m</span></th><th class="num">Est</th><th class="num">Drift</th><th>Status</th></tr></thead>
+            <tbody id="trayRows"><tr><td colspan="5" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -262,7 +262,9 @@
     </div>
     <div class="group">
       <span class="glabel">Fault&nbsp;inject</span>
-      <button class="btn" id="blindBtn" aria-pressed="false" title="Controller must dead-reckon through the blinded marshmallow sensor">🚫 Blind marsh sensor</button>
+      <button class="btn" id="failGBtn" aria-pressed="false" title="Graham dispenser fails to fire — no graham placed; the open-loop controller never notices">✕ Fail graham disp</button>
+      <button class="btn" id="dblCBtn" aria-pressed="false" title="Chocolate dispenser double-fires — two chocolates placed on one command">✚ Double choc disp</button>
+      <button class="btn" id="blindBtn" aria-pressed="false" title="Controller must dead-reckon through the blinded marshmallow sensor">◎ Blind marsh sensor</button>
       <button class="btn" id="jamBtn" aria-pressed="false" title="Chocolate gate won't open — tray gets stuck, controller flags it">🔒 Jam choc gate</button>
     </div>
   </footer>
@@ -303,7 +305,8 @@
   // ---- world (physics + sensor generation) ----
   let world, ctrl, sim;
   function reset(){
-    world = { trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false, done:0 };
+    world = { trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false, done:0,
+              disp:{graham:"ok",choc:"ok",marsh:"ok"}, _lastDisp:[false,false,false] };
     ctrl  = makeController();
     sim   = { t:0, tick:0, playing:false, speed:1, acc:0 };
     logLines.length = 0;
@@ -314,7 +317,9 @@
   function injectTray(){
     // A physical tray enters the belt; the controller only learns of it at the
     // first sensor (graham). stage: 0=bare .. 3=all ingredients, then toasted.
-    world.trays.push({ id:world.nextId++, pos:-TRAY_W/2, stage:0, toast:0, ctrlId:null });
+    // counts = ACTUAL contents on the tray (ground truth, owned by the world).
+    // The controller never reads this; it tracks its own believed counts.
+    world.trays.push({ id:world.nextId++, pos:-TRAY_W/2, counts:{g:0,c:0,m:0}, toast:0 });
   }
 
   // ---------------------------------------------------------------
@@ -345,7 +350,7 @@
           if (rise){
             let tr = this._nearest(STATIONS[k].pos);
             if (!tr && k===0){                       // first sighting = new tray
-              tr = { id:this.nextId++, estPos:STATIONS[k].pos, stage:0, status:"moving", hold:false, dispenseAt:0 };
+              tr = { id:this.nextId++, estPos:STATIONS[k].pos, stage:0, status:"moving", hold:false, dispenseAt:0, placed:[0,0,0] };
               this.tracks.push(tr);
               log(inp.t, "tray #"+tr.id+" detected at GRAHAM", "evt");
             }
@@ -356,6 +361,7 @@
                 o.gate[k] = false; tr.status = "held"; tr.hold = k;
                 tr.dispenseAt = inp.t + DISPENSE_MS;
                 o.dispense[k] = true;
+                tr.placed[k]++;                        // BELIEVED: assumes the pulse worked (open-loop)
                 log(inp.t, "hold #"+tr.id+" @ "+STATIONS[k].name+"  (drift "+corr.toFixed(0)+"mm corrected)", "evt");
               }
             }
@@ -419,7 +425,6 @@
   function worldStep(out, dt){
     // belt physics: actual travel a bit less than commanded (slip) -> drift
     for (const tr of world.trays){
-      if (tr.status==="done") continue;
       // a tray is physically stopped if a CLOSED gate is just ahead of it
       let blocked=false;
       for (let k=0;k<3;k++){
@@ -429,13 +434,31 @@
       }
       tr._blocked=blocked;
       if (!blocked) tr.pos += out.belt * ACTUAL_SLIP * dt;
-      // ingredient stack follows controller-confirmed stage of matching track
-      const ct = world.trays_ctrl && world.trays_ctrl[tr.id];
     }
-    // sync visible stack/toast from controller tracks (what the controller believes it placed)
+
+    // dispenser outcomes: a dispense pulse places the REAL number of units onto
+    // whatever tray is at that station (fault modes: fail=0, double=2). This is
+    // ground truth — the controller only assumed it placed 1.
+    for (let k=0;k<3;k++){
+      if (out.dispense[k] && !world._lastDisp[k]){
+        const wt = world.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
+        if (wt){
+          const mode = world.disp[STATIONS[k].key];
+          const add = mode==="fail"?0:(mode==="double"?2:1);
+          wt.counts[["g","c","m"][k]] += add;
+          if (mode==="fail")   log(sim.t*1000, STATIONS[k].name+" dispenser FAILED on #"+wt.id+" — 0 placed", "crit");
+          if (mode==="double") log(sim.t*1000, STATIONS[k].name+" dispenser DOUBLE-fired on #"+wt.id+" — 2 placed", "warn");
+        }
+      }
+    }
+    world._lastDisp = out.dispense.slice();
+
+    // toast browning while dwelling in the tunnel — only if a marshmallow exists
     for (const t of ctrl.tracks){
-      const wt = nearestWorld(t.estPos);
-      if (wt){ wt.stage = Math.max(wt.stage, t.stage); if (t.status==="toasting"||t.stage>=4) wt.toast = Math.min(1, wt.toast + dt/(TOAST_MS/1000)); }
+      if (t.status==="toasting" || t.stage>=4){
+        const wt = nearestWorld(t.estPos);
+        if (wt && wt.counts.m>0) wt.toast = Math.min(1, wt.toast + dt/(TOAST_MS/1000));
+      }
     }
     // heater raises tunnel temp
     const targetTemp = out.heater ? 205 : 20;
@@ -596,15 +619,12 @@
     ctx.strokeStyle="rgba(255,255,255,.08)"; ctx.lineWidth=1; ctx.stroke();
     // stacked ingredients
     let y=topY-6;
-    const layer=(h,color,inset)=>{ y-=h; ctx.fillStyle=color; roundRect(cx-TRAY_W/2+inset, y, TRAY_W-2*inset, h, 2); ctx.fill(); };
-    if (tr.stage>=1) layer(9, C.graham, 4);
-    if (tr.stage>=2) layer(7, C.choc, 6);
-    if (tr.stage>=3){
-      // marshmallow browns with toast level
-      const t=tr.toast||0; const col = lerpColor(C.marsh, C.toast, t);
-      layer(11, col, 5);
-    }
-    if (tr.stage>=4) { ctx.fillStyle="rgba(255,106,44,.0)"; }
+    const layer=(h,color,inset)=>{ y-=h; ctx.fillStyle=color; roundRect(cx-TRAY_W/2+inset, y, TRAY_W-2*inset, h, 2); ctx.fill();
+      ctx.strokeStyle="rgba(0,0,0,.22)"; ctx.lineWidth=.5; ctx.stroke(); };
+    // rendered from ACTUAL contents: a failed dispense leaves a gap, a double stacks twice
+    for (let i=0;i<tr.counts.g;i++) layer(9, C.graham, 4);
+    for (let i=0;i<tr.counts.c;i++) layer(7, C.choc, 6);
+    for (let i=0;i<tr.counts.m;i++) layer(11, lerpColor(C.marsh, C.toast, tr.toast||0), 5);
     // id tag
     ctx.fillStyle=C.muted; ctx.font="600 9px "+MONO; ctx.textAlign="center";
     ctx.fillText("#"+tr.id, cx, topY-6+11);
@@ -650,18 +670,28 @@
   function drawTrays(){
     const rows=$("trayRows");
     const list = ctrl.tracks;
-    if (!list.length){ rows.innerHTML='<tr><td colspan="6" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr>'; return; }
-    const stageName=["bare","graham","+choc","+marsh","toasted"];
+    if (!list.length){ rows.innerHTML='<tr><td colspan="5" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr>'; return; }
+    const KEY=["g","c","m"];
+    // one dot per ingredient: believed vs ACTUAL. green=ok, red=missing (dispense
+    // failed), amber=double. The controller only knows `placed` (believed).
+    const dot=(t,wt,i)=>{
+      const bel=t.placed[i];
+      const act = wt ? wt.counts[KEY[i]] : (bel>0?1:0);   // if tray gone, trust belief
+      let col="#4a4139";                                   // empty / not placed yet
+      if (bel>0 || act>0) col = act===1 ? "#57c08a" : (act===0 ? "#e2493a" : "#f0c24a");
+      const lbl = act>=2 ? act : "";
+      return `<span title="${KEY[i]}: believed ${bel}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
+    };
     rows.innerHTML = list.map(t=>{
-      const wt=nearestWorld(t.estPos); const actual= wt?wt.pos:null;
-      const drift = actual!=null ? (t.estPos-actual) : 0;
-      const dcls = Math.abs(drift)>40?"drift-crit":(Math.abs(drift)>18?"drift-hi":"");
+      const wt=nearestWorld(t.estPos);
+      const drift = wt ? (t.estPos-wt.pos) : null;
+      const dcls = drift!=null && Math.abs(drift)>40?"drift-crit":(drift!=null&&Math.abs(drift)>18?"drift-hi":"");
       const stat={moving:"moving",held:"held",toasting:"toast",done:"done",lost:"lost"}[t.status]||t.status;
       return `<tr>
-        <td>#${t.id}</td><td>${stageName[Math.min(4,t.stage)]}</td>
-        <td class="num">${actual!=null?actual.toFixed(0):"—"}</td>
+        <td>#${t.id}</td>
+        <td style="white-space:nowrap">${dot(t,wt,0)}${dot(t,wt,1)}${dot(t,wt,2)}</td>
         <td class="num">${t.estPos.toFixed(0)}</td>
-        <td class="num ${dcls}">${actual!=null?(drift>=0?"+":"")+drift.toFixed(0):"—"}</td>
+        <td class="num ${dcls}">${drift!=null?(drift>=0?"+":"")+drift.toFixed(0):"—"}</td>
         <td><span class="tag ${t.status==="toasting"?"toast":t.status}">${stat}</span></td>
       </tr>`;
     }).join("");
@@ -688,9 +718,12 @@
   // =================== CONTROLS ===================
   $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
   $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run"; stepOnce(); });
-  $("resetBtn").addEventListener("click", ()=>{ reset(); $("playBtn").innerHTML="▶ Run"; });
+  $("resetBtn").addEventListener("click", ()=>{ reset(); $("playBtn").innerHTML="▶ Run";
+    ["failGBtn","dblCBtn","blindBtn","jamBtn"].forEach(id=>$(id).setAttribute("aria-pressed","false")); });
   $("injectBtn").addEventListener("click", ()=>{ injectTray(); if(!logLines.length||true) log(sim.t*1000,"operator injected a tray at belt entry",""); });
   $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
+  $("failGBtn").addEventListener("click", e=>{ const on=world.disp.graham!=="fail"; world.disp.graham=on?"fail":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"graham dispenser "+(on?"set to FAIL (places 0)":"restored"),"warn"); });
+  $("dblCBtn").addEventListener("click", e=>{ const on=world.disp.choc!=="double"; world.disp.choc=on?"double":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
   $("blindBtn").addEventListener("click", e=>{ world.blindMarsh=!world.blindMarsh; e.currentTarget.setAttribute("aria-pressed",world.blindMarsh); log(sim.t*1000,"marshmallow sensor "+(world.blindMarsh?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
   $("jamBtn").addEventListener("click", e=>{ world.jamChoc=!world.jamChoc; e.currentTarget.setAttribute("aria-pressed",world.jamChoc); log(sim.t*1000,"chocolate gate "+(world.jamChoc?"JAMMED shut":"freed"),"warn"); });
   window.addEventListener("resize", ()=>{ fitCanvas(); renderAll(); });

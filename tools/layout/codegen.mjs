@@ -229,6 +229,7 @@ export function meta(L) {
   return {
     name: L.name, title: L.title, description: L.description,
     belt: { length_mm: L.beltLen, nominal_speed_mm_s: L.speed },
+    nStages: L.nStages, tunnelStage: L.tunnel ? L.tunnel.stage : -1,
     dispensers: L.dispensers,
     tunnel: L.tunnel, smusher: L.smusher, maxServos: L.maxServos,
     modules: L.modules.map(m => ({ id: m.id, type: m.type, pos_mm: m.pos_mm, ingredient: m.ingredient || null, servos: m.servos || null, exit_mm: m.exit_mm || null, role: m.role || null })),

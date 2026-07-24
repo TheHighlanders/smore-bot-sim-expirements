@@ -170,8 +170,7 @@
   /* ---------- studio view (write your own controller) ---------- */
   .studio-only { display:none; }
   .app[data-view="studio"] .studio-only { display:flex; }
-  .app[data-view="studio"] .compare-only,
-  .app[data-view="studio"] .single-only { display:none; }
+  .app[data-view="studio"] .compare-only { display:none; }   /* studio keeps the single line view visible below the editor */
   .studio { flex-direction:column; gap:0; padding:0; overflow:hidden; }
   .studio-hd { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--hair); flex-wrap:wrap; }
   .lang-tabs { display:flex; gap:4px; }
@@ -635,12 +634,15 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
       log:[], hist:[], good:0, bad:0, tallied:{}
     };
     e.wasm = makeWasmCtrl(mode, e);
+    e.drive = (inp)=>{ writeInputs(e.wasm, inp); e.wasm.inst.exports.tick(); readCtrl(e); };
     return e;
   }
   function activate(e){ world=e.world; ctrl=e.ctrl; activeLog=e.log; }
 
   function reset(){
-    engines = viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)] : [makeEngine(modeA)];
+    engines = viewMode==="studio"  ? [makeJsEngine()]
+            : viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)]
+            :                        [makeEngine(modeA)];
     sim = { t:0, tick:0, playing:false, speed:1, acc:0 };
     activate(engines[0]);
     renderAll();
@@ -772,9 +774,7 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     sim.t += STEP; sim.tick++;
     for (const e of engines){
       const inp = senseInputs(e.world);
-      writeInputs(e.wasm, inp);         // marshal world -> Inputs struct in wasm memory
-      e.wasm.inst.exports.tick();       // run the REAL compiled C++ controller
-      readCtrl(e);                      // read Outputs struct + track state back out
+      e.drive(inp);                     // wasm controller OR student JS/Python -> e.ctrl.out + tracks
       worldStep(e.world, e.ctrl, e.ctrl.out, STEP);
       pushSample(e, inp, e.ctrl.out);
       tally(e);
@@ -1163,11 +1163,76 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
       + (extra.length? " · note: layout also has "+extra.join(", ")+" your controller doesn't mention" : "") + ".", "ok");
   }
 
+  // ---- run a student controller as a lane backend ----
+  // `io` is the layout-aware API the scripted controller writes against (ER-1/2):
+  // it reads sensors, sets actuators, and returns its own tray tracks to render.
+  function makeIO(w, o, inp, mem){
+    return {
+      nowMs: inp.t, dt: STEP, run: inp.run, nominal: NOMINAL_SPEED, beltCmd: mem.__beltCmd||0,
+      nStages: LAYOUT.nStages, tunnelStage: LAYOUT.tunnelStage,
+      dispensers: STATIONS.map((s,i)=>({ index:i, id:s.id, ingredient:s.ingredient, pos:s.pos, servos:s.servos, stage:s.stage, afterTunnel:s.after_tunnel, isCap:s.is_cap })),
+      tunnel: TUNNEL ? { entry:TUNNEL.entry, exit:TUNNEL.exit } : null,
+      sense:i=>!!inp.sense[i], confirm:i=>inp.confirm[i]|0,
+      tunnelEntry:()=>!!inp.tunnel_entry, tunnelExit:()=>!!inp.tunnel_exit, temp:()=>inp.tunnel_temp,
+      belt:v=>{ o.belt=+v||0; }, gate:(i,open)=>{ o.gate[i]=!!open; }, dispense:(i,on)=>{ o.dispense[i]=!!on; },
+      tunnelGate:open=>{ o.tunnelGateOpen=!!open; }, heater:on=>{ o.heater=!!on; },
+      log:(m,k)=>log(inp.t, String(m), k||"evt"),
+    };
+  }
+  const _statusName = s => (["moving","held","toasting","done","lost"].includes(s) ? s : "moving");
+  function normTrack(t){ return { id:t.id|0, estPos:+t.estPos||0, stage:t.stage|0, status:_statusName(t.status), placed:Array.isArray(t.placed)?t.placed.map(x=>x|0):Array(N_DISP).fill(0) }; }
+  function jsDrive(e, inp){
+    const o=e.ctrl.out;
+    e.mem.__beltCmd = o.belt;                         // last commanded belt (for dead-reckoning)
+    o.belt=0; for(let k=0;k<N_DISP;k++){ o.gate[k]=true; o.dispense[k]=false; } o.heater=false; o.tunnelGateOpen=true;
+    const io=makeIO(e.world,o,inp,e.mem);
+    let tracks;
+    try { tracks = e.controller(io, e.mem); }
+    catch(err){ studioStatus("runtime error at t="+(inp.t/1000).toFixed(2)+"s: "+err.message, "err"); sim.playing=false; throw err; }
+    e.ctrl.tracks = (Array.isArray(tracks)?tracks:(e.mem.tracks||[])).map(normTrack);
+  }
+  function makeJsEngine(){
+    const e = {
+      mode:"js",
+      world:{ trays:[], nextId:1, temp:20, heaterOn:false,
+        faults:Array(N_DISP).fill("ok"), blind:Array(N_DISP).fill(false), jam:Array(N_DISP).fill(false), confirm:Array(N_DISP).fill(0) },
+      ctrl:{ out:{ belt:0, gate:Array(N_DISP).fill(true), dispense:Array(N_DISP).fill(false), heater:false, tunnelGateOpen:true }, tracks:[] },
+      mem:{}, controller: STUDIO.compiled || (()=>[]), log:[], hist:[], good:0, bad:0, tallied:{}
+    };
+    e.drive = (inp)=>jsDrive(e, inp);
+    return e;
+  }
+  // compile editor source -> a tick(io,mem) function (throws on parse error / bad shape)
+  function studioCompile(){
+    const src = STUDIO.editor ? STUDIO.editor.getValue() : STARTER("js");
+    if (STUDIO.lang==="python") throw new Error("the Python runtime is the next step — use the JavaScript tab for now");
+    if (STUDIO.lang==="cpp")    throw new Error("C++ runs via in-browser compile (a later step) — use the JavaScript tab for now");
+    const factory = new Function(src + "\n;return { tick:(typeof tick!=='undefined')?tick:null, requires:(typeof requires!=='undefined')?requires:null };");
+    const mod = factory();
+    if (typeof mod.tick !== "function") throw new Error("no `function tick(io, mem)` defined");
+    return mod;
+  }
+  function studioLoad(){
+    try {
+      const mod = studioCompile();
+      STUDIO.compiled = mod.tick;
+      reset(); injectTray(); renderAll();          // reset() builds a JS-backed lane in studio view
+      studioStatus("running your JavaScript controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
+      return true;
+    } catch(err){ studioStatus("could not run: "+err.message, "err"); return false; }
+  }
+
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
-  $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
-  $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run"; stepOnce(); });
-  $("resetBtn").addEventListener("click", ()=>{ reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
+  $("playBtn").addEventListener("click", ()=>{
+    if (viewMode==="studio" && !sim.playing){ if(!studioLoad()) return; }  // (re)compile current code, then play
+    sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
+  $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run";
+    if (viewMode==="studio" && !(engines[0] && engines[0].mode==="js")){ if(!studioLoad()) return; }
+    stepOnce(); });
+  $("resetBtn").addEventListener("click", ()=>{
+    if (viewMode==="studio"){ studioLoad(); $("playBtn").innerHTML="▶ Run"; return; }
+    reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
     buildFaultUI(); log(0,"reset","") ; renderAll(); });
   $("injectBtn").addEventListener("click", ()=>{ injectTray(); log(sim.t*1000,"operator injected a tray at belt entry",""); });
   $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
@@ -1193,8 +1258,9 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     $("viewStudio").classList.toggle("ctrl-active", mode==="studio");
     if (mode==="studio"){
       $("studioLayoutName").textContent = LAYOUT.title || LAYOUT.name;
-      initMonaco().catch(e=>studioStatus("Monaco failed to load: "+e.message, "err"));
-      return;                       // studio doesn't touch the sim engines (yet)
+      fitAll();
+      initMonaco().then(()=>studioLoad()).catch(e=>studioStatus("Monaco failed to load: "+e.message, "err"));
+      return;
     }
     fitAll(); reset(); injectTray(); renderAll();
   }

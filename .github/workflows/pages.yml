@@ -30,6 +30,8 @@ jobs:
         run: make app
       - name: Sanity-check the WASM<->JS boundary before publishing
         run: make -C controller integration
+      - name: Vendor the in-browser C++ toolchain (for the Studio's C++ tab)
+        run: ./tools/get-wasm-clang.sh
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/app

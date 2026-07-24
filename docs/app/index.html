@@ -184,6 +184,15 @@
   .studio-status.ok { color:var(--good); }
   .studio-status.err { color:var(--crit); }
   .studio-note { font:11px/1.5 var(--mono); color:var(--muted-2); }
+  /* current line highlight during step-debugging */
+  .dbg-line { background:rgba(255,106,44,.18) !important; }
+  .dbg-glyph { background:var(--ember); width:4px !important; margin-left:3px; }
+  #dbgVars { border-top:1px solid var(--hair); padding:10px 14px; display:flex; gap:22px; flex-wrap:wrap;
+    font:11px/1.6 var(--mono); background:var(--panel-2); }
+  #dbgVars .col { min-width:150px; }
+  #dbgVars h4 { margin:0 0 4px; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted-2); }
+  #dbgVars .kv { color:var(--muted); } #dbgVars .kv b { color:var(--text); font-weight:600; }
+  #dbgVars .trk { color:var(--teal); }
   .lane-hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
     padding:9px 14px; border-bottom:1px solid var(--hair-soft); }
   .lane-hd .lane-name { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:.03em; color:var(--text); }
@@ -244,11 +253,16 @@
       </div>
       <span class="studio-note" id="studioLang">write a controller for the <b id="studioLayoutName">…</b> layout</span>
       <span class="spacer"></span>
+      <button class="btn" id="dbgBtn" title="Debug: step through your controller's decision for one control cycle, line by line">🐞 Debug</button>
+      <button class="btn" id="dbgStepLine" title="Step one source line" disabled>⤓ Line</button>
+      <button class="btn" id="dbgStepTick" title="Finish this cycle (advance the line one tick)" disabled>⏭ Tick</button>
+      <button class="btn" id="dbgStop" title="Stop debugging" disabled>■ Stop</button>
       <button class="btn" id="checkBtn" title="Validate this controller against the active layout (the runtime equivalent of the C++ compile-time check)">✓ Check vs layout</button>
       <button class="btn" id="revertBtn" title="Restore the starter controller">↺ Revert</button>
     </div>
     <div id="editor"></div>
     <div class="studio-status" id="studioStatus">Monaco loading…</div>
+    <div id="dbgVars" style="display:none"></div>
   </section>
 
   <!-- Starter controllers (inert; read as text). All three target the same §4
@@ -1213,6 +1227,7 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
     return mod;
   }
   function studioLoad(){
+    if (DBG.on) dbgStop();
     try {
       const mod = studioCompile();
       STUDIO.compiled = mod.tick;
@@ -1221,6 +1236,92 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
       return true;
     } catch(err){ studioStatus("could not run: "+err.message, "err"); return false; }
   }
+
+  // ---- G2: line-by-line step debugging (JS) ----
+  // We instrument the source with a plain __trace(line) call before each
+  // statement, run the whole cycle once while recording (line, mem, outputs) at
+  // every line, then let the user walk that recorded trace — a deterministic,
+  // time-travel-friendly line debugger. Works inside helper functions too (no
+  // generator constraints), and the deterministic sim makes each cycle repeatable.
+  const DBG = { on:false, engine:null, trace:[], pos:0, collecting:false, inp:null, snapOut:null, dec:[] };
+  function dbgTrace(line){
+    if (!DBG.collecting) return;
+    const o = DBG.snapOut;
+    DBG.trace.push({ line, mem: JSON.parse(JSON.stringify(DBG.engine.mem)),
+      out: { belt:o.belt, gate:o.gate.slice(), dispense:o.dispense.slice(), heater:o.heater, tunnelGateOpen:o.tunnelGateOpen } });
+  }
+  function instrumentForTrace(src){
+    return src.split("\n").map((raw,i)=>{
+      const t = raw.replace(/\/\/.*$/,"").trim();
+      const skip = t==="" || raw.trim().startsWith("//") || /^[}\])]/.test(t) || /^(else|case|default)\b/.test(t) || /[,+\-*/%&|=?:.(<>]$/.test(t);
+      return skip ? raw : raw.replace(/^(\s*)/, `$1__trace(${i+1});`);
+    }).join("\n");
+  }
+  function studioCompileTraced(){
+    if (STUDIO.lang!=="js") throw new Error("step-debugging is wired for JavaScript first (Python next)");
+    const instr = instrumentForTrace(STUDIO.editor.getValue());
+    const factory = new Function("__trace", instr + "\n;return { tick:(typeof tick!=='undefined')?tick:null };");
+    const mod = factory(dbgTrace);
+    if (typeof mod.tick !== "function") throw new Error("no `function tick(io, mem)` defined");
+    return mod.tick;
+  }
+  function dbgButtons(on){ $("dbgStepLine").disabled=!on; $("dbgStepTick").disabled=!on; $("dbgStop").disabled=!on; $("dbgBtn").disabled=on; }
+  function dbgHighlight(line){
+    if (!STUDIO.editor) return;
+    DBG.dec = STUDIO.editor.deltaDecorations(DBG.dec, [{ range:new monaco.Range(line,1,line,1), options:{ isWholeLine:true, className:"dbg-line", glyphMarginClassName:"dbg-glyph" } }]);
+    STUDIO.editor.revealLineInCenterIfOutsideViewport(line);
+  }
+  function dbgClear(){ if (STUDIO.editor) DBG.dec = STUDIO.editor.deltaDecorations(DBG.dec, []); }
+  function renderDbgVars(entry){
+    const v=$("dbgVars"); if(!v) return; v.style.display="flex";
+    const mem=entry.mem||{}, out=entry.out||{}, inp=DBG.inp;
+    const tracks=(mem.tracks||[]).map(t=>`#${t.id} ${t.status} est=${(t.estPos||0).toFixed(0)} stage=${t.stage} placed=[${(t.placed||[]).join(",")}]`).join("<br>")||"— none yet —";
+    const sens=STATIONS.map((s,i)=>`${s.id}:${inp.sense[i]?1:0}`).join("  ");
+    const outs=`belt=${Math.round(out.belt||0)}  gate=[${(out.gate||[]).map(g=>g?1:0).join("")}]  disp=[${(out.dispense||[]).map(d=>d?1:0).join("")}]  heater=${out.heater?1:0}`;
+    v.innerHTML = `<div class="col"><h4>tray tracking (mem)</h4><div class="trk">${tracks}</div></div>`
+      + `<div class="col"><h4>inputs this cycle</h4><div class="kv">sense ${sens}<br>tunnel in/out ${inp.tunnel_entry?1:0}/${inp.tunnel_exit?1:0} · temp ${Math.round(inp.tunnel_temp)}°</div></div>`
+      + `<div class="col"><h4>outputs (computed so far)</h4><div class="kv">${outs}</div></div>`;
+  }
+  function dbgShow(){
+    if (!DBG.trace.length){ studioStatus("cycle ran with no traceable lines — press ⏭ Tick to advance", "ok"); dbgClear(); return; }
+    const entry = DBG.trace[Math.min(DBG.pos, DBG.trace.length-1)];
+    dbgHighlight(entry.line); renderDbgVars(entry);
+    studioStatus("⏸ paused at line "+entry.line+" — step "+(DBG.pos+1)+"/"+DBG.trace.length+" of the cycle at t="+(DBG.inp.t/1000).toFixed(2)+"s");
+  }
+  function dbgPrime(){
+    const e=DBG.engine, o=e.ctrl.out;
+    DBG.inp = senseInputs(e.world);
+    e.mem.__beltCmd = o.belt;
+    o.belt=0; for(let k=0;k<N_DISP;k++){ o.gate[k]=true; o.dispense[k]=false; } o.heater=false; o.tunnelGateOpen=true;
+    const io = makeIO(e.world, o, DBG.inp, e.mem);
+    DBG.trace=[]; DBG.snapOut=o; DBG.collecting=true;
+    let tracks;
+    try { tracks = e.controller(io, e.mem); }
+    catch(err){ DBG.collecting=false; studioStatus("runtime error: "+err.message, "err"); dbgStop(); return; }
+    DBG.collecting=false;
+    e.ctrl.tracks = (Array.isArray(tracks)?tracks:(e.mem.tracks||[])).map(normTrack);
+    DBG.pos=0; dbgShow();
+  }
+  function dbgFinishTick(){
+    const e=DBG.engine;
+    worldStep(e.world, e.ctrl, e.ctrl.out, STEP);
+    pushSample(e, DBG.inp, e.ctrl.out); tally(e);
+    sim.t += STEP; sim.tick++;
+    renderAll(); dbgPrime();
+  }
+  function dbgStart(){
+    if (viewMode!=="studio") return;
+    let tickFn; try { tickFn = studioCompileTraced(); }
+    catch(err){ studioStatus("could not debug: "+err.message, "err"); return; }
+    STUDIO.compiled = tickFn;                      // reset() builds a JS lane with the traced tick
+    reset(); injectTray();
+    sim.playing=false; $("playBtn").innerHTML="▶ Run";
+    DBG.on=true; DBG.engine=engines[0]; dbgButtons(true);
+    dbgPrime(); renderAll();
+  }
+  function dbgStepLine(){ if(!DBG.on) return; DBG.pos++; if (DBG.pos < DBG.trace.length) dbgShow(); else dbgFinishTick(); }
+  function dbgStepTick(){ if(!DBG.on) return; dbgFinishTick(); }
+  function dbgStop(){ DBG.on=false; dbgClear(); dbgButtons(false); const v=$("dbgVars"); if(v) v.style.display="none"; studioStatus("debug stopped — edit and press 🐞 Debug or ▶ Run."); }
 
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
@@ -1252,6 +1353,7 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
   $("ctrlOpen").addEventListener("click", ()=>selectCtrl("open"));
   $("ctrlClosed").addEventListener("click", ()=>selectCtrl("closed"));
   function setView(mode){
+    if (DBG.on && mode!=="studio") dbgStop();
     viewMode=mode; APP.dataset.view=mode; $("playBtn").innerHTML="▶ Run";
     $("viewSingle").classList.toggle("ctrl-active", mode==="single");
     $("viewCompare").classList.toggle("ctrl-active", mode==="compare");
@@ -1267,9 +1369,13 @@ extern "C" void tick(const Inputs& in, Outputs& out) {
   $("viewSingle").addEventListener("click", ()=>setView("single"));
   $("viewCompare").addEventListener("click", ()=>setView("compare"));
   $("viewStudio").addEventListener("click", ()=>setView("studio"));
-  document.querySelectorAll(".lang-tab").forEach(b=>b.addEventListener("click", ()=>setStudioLang(b.dataset.lang)));
+  document.querySelectorAll(".lang-tab").forEach(b=>b.addEventListener("click", ()=>{ if(DBG.on) dbgStop(); setStudioLang(b.dataset.lang); }));
   $("checkBtn").addEventListener("click", checkVsLayout);
-  $("revertBtn").addEventListener("click", ()=>{ if(STUDIO.editor){ STUDIO.editor.setValue(STARTER(STUDIO.lang)); studioStatus("reverted to the starter controller"); } });
+  $("revertBtn").addEventListener("click", ()=>{ if(DBG.on) dbgStop(); if(STUDIO.editor){ STUDIO.editor.setValue(STARTER(STUDIO.lang)); studioStatus("reverted to the starter controller"); } });
+  $("dbgBtn").addEventListener("click", dbgStart);
+  $("dbgStepLine").addEventListener("click", dbgStepLine);
+  $("dbgStepTick").addEventListener("click", dbgStepTick);
+  $("dbgStop").addEventListener("click", dbgStop);
   window.addEventListener("resize", ()=>{ fitAll(); renderAll(); });
 
   // ---- boot ----

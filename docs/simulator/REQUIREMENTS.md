@@ -99,6 +99,7 @@ reads outputs); exact encoding finalized at implementation.
 | `tunnel_exit` | bool | tray at tunnel exit |
 | `tunnel_temp_c` | f32 | tunnel temperature |
 | `run` | bool | operator run/stop (E-stop clear) |
+| `dispense_confirm[0..2]` | bool | *(proposed, optional)* a unit actually left the chute — lets the controller close the loop on contents (see §5.1) |
 
 **Outputs (controller → world), each tick**
 
@@ -135,6 +136,26 @@ outputs + state).
   tray, but data structures and association must not assume a single tray.
 - **Fault awareness (stretch):** if an expected sensor edge never arrives (jam) or
   an unexpected one does (mis-track), flag the tray `lost` and surface it.
+
+### 5.1 Contents tracking (same idea, applied to ingredients)
+
+Tray *contents* mirror tray *position*: there is **actual** contents (ground
+truth, owned by the world/hardware) and the controller's **believed** contents
+(inferred only from the dispense commands it issued). A real dispenser fault —
+a misfire (0 units) or a double-drop (2 units) — changes the actual contents;
+with no feedback the controller stays wrong (open-loop), exactly as dead-reckoned
+position drifts when no sensor sees the tray.
+
+- **Baseline (open-loop, no contract change):** the controller counts its own
+  dispense pulses as believed contents; the divergence from actual is the
+  teachable failure. *(Implemented in the mockup.)*
+- **Optional feedback (`dispense_confirm[k]`):** a chute drop-sensor lets the
+  controller verify each dispense and **retry** a miss / flag an over-fill — the
+  realistic closed-loop upgrade. This is the one contract addition the contents
+  feature needs; open-loop needs none.
+
+The controller must **never** read actual contents directly — only its commands
+and (optionally) the confirm sensor.
 
 ## 6. Per-station operation (controller state machine, per tray)
 
@@ -182,6 +203,11 @@ operation.
 - **VR-7** Theme-aware (light/dark), responsive, no horizontal page scroll.
 - **VR-8** The visual layer reads only the exposed contract (§4) — swapping the
   mock for the real WASM controller requires no visualizer changes.
+- **VR-9** A **signal-history timeline** (AdvantageScope-style): every contract
+  input/output over time in one image — analog traces (belt, temp) + digital
+  lanes (sensors, gates, heater, per-station dispense pulses) with a time cursor.
+- **VR-10** Per-tray **contents display**: actual vs believed per ingredient
+  (ok / missing / double), so dispenser faults read at a glance (§5.1).
 
 ## 9. Testing strategy
 

@@ -155,6 +155,19 @@
   button.btn.primary:hover { background:#4bd0df; }
   button.btn[aria-pressed="true"] { border-color:var(--crit); color:var(--crit); background:rgba(226,73,58,.10); }
   button.btn.ctrl-active { border-color:var(--teal); color:var(--teal); background:rgba(51,188,203,.12); }
+
+  /* ---------- compare view (side-by-side A/B) ---------- */
+  .app[data-view="compare"] .single-only { display:none; }
+  .app[data-view="single"]  .compare-only { display:none; }
+  .compare-view { display:flex; flex-direction:column; gap:14px; }
+  .lane-hd { display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:9px 14px; border-bottom:1px solid var(--hair-soft); }
+  .lane-hd .lane-name { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:.03em; color:var(--text); }
+  .lane-tally { display:flex; gap:14px; font-family:var(--mono); font-size:12.5px; font-variant-numeric:tabular-nums; }
+  .lane-tally .ok  { color:var(--good); }
+  .lane-tally .bad { color:var(--crit); }
+  .lane-canvas-wrap { padding:8px; }
+  canvas.lane-canvas { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
   button.btn .ic { width:12px; height:12px; }
 
   input[type=range] { -webkit-appearance:none; appearance:none; height:4px; width:130px; border-radius:3px;
@@ -186,7 +199,7 @@
     </div>
   </header>
 
-  <main class="stage">
+  <main class="stage single-only">
     <section class="panel lineview">
       <div class="panel-hd">
         <h2>Line view</h2>
@@ -248,19 +261,43 @@
     </aside>
   </main>
 
-  <section class="panel timeline">
+  <section class="panel timeline single-only">
     <div class="panel-hd"><h2>Signal history</h2><span class="hint">inputs &amp; outputs over time — whole run in one view</span></div>
     <div class="tl-wrap"><canvas id="tl" width="1600" height="214" role="img"
       aria-label="Timeline of controller input and output signals over the whole run"></canvas></div>
   </section>
 
+  <section class="compare-view compare-only">
+    <section class="panel">
+      <div class="lane-hd">
+        <span class="lane-name" id="lane0-name">Open-loop</span>
+        <span class="lane-tally"><span class="ok">✓ good <b id="lane0-good">0</b></span><span class="bad">✗ mis-filled <b id="lane0-bad">0</b></span></span>
+        <span class="pill stop" id="lane0-state"><span class="dot"></span>PAUSED</span>
+      </div>
+      <div class="lane-canvas-wrap"><canvas id="laneA" class="lane-canvas" width="1600" height="480" role="img" aria-label="Lane A line view"></canvas></div>
+    </section>
+    <section class="panel">
+      <div class="lane-hd">
+        <span class="lane-name" id="lane1-name">Closed-loop</span>
+        <span class="lane-tally"><span class="ok">✓ good <b id="lane1-good">0</b></span><span class="bad">✗ mis-filled <b id="lane1-bad">0</b></span></span>
+        <span class="pill stop" id="lane1-state"><span class="dot"></span>PAUSED</span>
+      </div>
+      <div class="lane-canvas-wrap"><canvas id="laneB" class="lane-canvas" width="1600" height="480" role="img" aria-label="Lane B line view"></canvas></div>
+    </section>
+  </section>
+
   <footer class="dock">
+    <div class="group">
+      <span class="glabel">View</span>
+      <button class="btn ctrl-sel ctrl-active" id="viewSingle" title="One controller, full instrumentation">Single</button>
+      <button class="btn ctrl-sel" id="viewCompare" title="Two controllers side by side on identical stimulus">Compare A/B</button>
+    </div>
     <div class="group">
       <button class="btn primary" id="playBtn" aria-label="Play or pause">▶ Run</button>
       <button class="btn" id="stepBtn" aria-label="Advance one control tick">⏭ Step</button>
       <button class="btn" id="resetBtn" aria-label="Reset simulation">↺ Reset</button>
     </div>
-    <div class="group">
+    <div class="group single-only">
       <span class="glabel">Controller</span>
       <button class="btn ctrl-sel ctrl-active" id="ctrlOpen" title="Assumes each dispense worked; ignores the confirm sensor">Open-loop</button>
       <button class="btn ctrl-sel" id="ctrlClosed" title="Reads dispense_confirm; retries a miss, flags an over-fill">Closed-loop</button>
@@ -316,25 +353,34 @@
   const DISPENSE_MS = 650;        // gate held closed to dispense + settle
   const TOAST_MS = 3800;          // dwell in tunnel
 
-  // ---- world (physics + sensor generation) ----
-  let world, ctrl, sim, ctrlMode="open";
+  // ---- engine: one self-contained "lane" = independent world + controller ----
+  // Compare mode runs two engines in parallel on ONE shared clock and IDENTICAL
+  // stimulus (same tray injections + same faults), so outcomes diverge fairly.
+  let engines=[], sim, viewMode="single", modeA="open", modeB="closed";
+  // "current target" globals set by activate()/setCanvas(); the renderer reads these.
+  let world, ctrl, liveInputs=null, activeLog=[];
+
+  function makeEngine(mode){
+    return {
+      mode,
+      world:{ trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false,
+              disp:{graham:"ok",choc:"ok",marsh:"ok"}, _lastDisp:[false,false,false], confirm:[0,0,0] },
+      ctrl: makeController(mode),
+      log:[], hist:[], good:0, bad:0, tallied:{}
+    };
+  }
+  function activate(e){ world=e.world; ctrl=e.ctrl; activeLog=e.log; }
+
   function reset(){
-    world = { trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false, done:0,
-              disp:{graham:"ok",choc:"ok",marsh:"ok"}, _lastDisp:[false,false,false], confirm:[0,0,0] };
-    ctrl  = makeController(ctrlMode);
-    sim   = { t:0, tick:0, playing:false, speed:1, acc:0 };
-    logLines.length = 0;
-    history.length = 0;
+    engines = viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)] : [makeEngine(modeA)];
+    sim = { t:0, tick:0, playing:false, speed:1, acc:0 };
+    activate(engines[0]);
     renderAll();
-    drawLog();
   }
 
+  // stimulus is shared across all lanes
   function injectTray(){
-    // A physical tray enters the belt; the controller only learns of it at the
-    // first sensor (graham). stage: 0=bare .. 3=all ingredients, then toasted.
-    // counts = ACTUAL contents on the tray (ground truth, owned by the world).
-    // The controller never reads this; it tracks its own believed counts.
-    world.trays.push({ id:world.nextId++, pos:-TRAY_W/2, counts:{g:0,c:0,m:0}, toast:0 });
+    for (const e of engines) e.world.trays.push({ id:e.world.nextId++, pos:-TRAY_W/2, counts:{g:0,c:0,m:0}, toast:0 });
   }
 
   // ---------------------------------------------------------------
@@ -429,113 +475,115 @@
     };
   }
 
-  // ---- world step: apply controller outputs to physics, make sensors ----
-  function worldStep(out, dt){
+  // ---- world step: apply a lane's controller outputs to that lane's physics ----
+  function worldStep(w, c, out, dt){
     // belt physics: actual travel a bit less than commanded (slip) -> drift
-    for (const tr of world.trays){
-      // a tray is physically stopped if a CLOSED gate is just ahead of it
-      let blocked=false;
+    for (const tr of w.trays){
+      let blocked=false;                                 // held by a CLOSED gate just ahead
       for (let k=0;k<3;k++){
         const gateX = STATIONS[k].pos;
-        const closed = !out.gate[k] || (k===1 && world.jamChoc);   // jammed choc gate stays shut
+        const closed = !out.gate[k] || (k===1 && w.jamChoc);
         if (closed && tr.pos < gateX && tr.pos > gateX-70) blocked=true;
       }
       tr._blocked=blocked;
       if (!blocked) tr.pos += out.belt * ACTUAL_SLIP * dt;
     }
-
-    // dispenser outcomes: a dispense pulse places the REAL number of units onto
-    // whatever tray is at that station (fault modes: fail=0, double=2). This is
-    // ground truth — the controller only assumed it placed 1.
+    // dispenser outcomes: a pulse places the REAL number of units (fault: fail=0,
+    // double=2). Ground truth — the controller only assumed 1.
     for (let k=0;k<3;k++){
-      if (out.dispense[k] && !world._lastDisp[k]){
-        const wt = world.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
+      if (out.dispense[k] && !w._lastDisp[k]){
+        const wt = w.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
         if (wt){
-          const mode = world.disp[STATIONS[k].key];
-          const add = mode==="fail"?0:(mode==="double"?2:1);
+          const mode = w.disp[STATIONS[k].key];
+          let add = 1;
+          if (mode==="double") add = 2;
+          else if (mode==="fail"){                       // flaky: first attempt misfires, a retry succeeds
+            wt._failed = wt._failed || {};
+            if (!wt._failed[k]){ wt._failed[k]=true; add = 0; } else add = 1;
+          }
           wt.counts[["g","c","m"][k]] += add;
-          world.confirm[k] = add;                       // drop-confirm sensor: units actually placed
-          if (mode==="fail")   log(sim.t*1000, STATIONS[k].name+" dispenser FAILED on #"+wt.id+" — 0 placed", "crit");
-          if (mode==="double") log(sim.t*1000, STATIONS[k].name+" dispenser DOUBLE-fired on #"+wt.id+" — 2 placed", "warn");
-        } else {
-          world.confirm[k] = 0;                          // pulse with no tray present -> nothing dropped
-        }
+          w.confirm[k] = add;                            // drop-confirm sensor: units actually placed
+          if (add===0)      log(sim.t*1000, STATIONS[k].name+" dispenser MISFIRE on #"+wt.id+" — 0 placed", "crit");
+          else if (add===2) log(sim.t*1000, STATIONS[k].name+" dispenser DOUBLE-fired on #"+wt.id+" — 2 placed", "warn");
+        } else { w.confirm[k] = 0; }
       }
     }
-    world._lastDisp = out.dispense.slice();
-
-    // toast browning while dwelling in the tunnel — only if a marshmallow exists
-    for (const t of ctrl.tracks){
+    w._lastDisp = out.dispense.slice();
+    // toast browning while dwelling — only if a marshmallow exists
+    for (const t of c.tracks){
       if (t.status==="toasting" || t.stage>=4){
-        const wt = nearestWorld(t.estPos);
+        const wt = nearestWorld(w, t.estPos);
         if (wt && wt.counts.m>0) wt.toast = Math.min(1, wt.toast + dt/(TOAST_MS/1000));
       }
     }
-    // heater raises tunnel temp
     const targetTemp = out.heater ? 205 : 20;
-    world.temp += (targetTemp - world.temp) * Math.min(1, dt*0.9);
-    world.heaterOn = out.heater;
-    // retire done trays off the end
-    world.done = ctrl.tracks.filter(t=>t.status==="done").length;
-    world.trays = world.trays.filter(tr=> tr.pos < BELT_LEN+140);
+    w.temp += (targetTemp - w.temp) * Math.min(1, dt*0.9);
+    w.heaterOn = out.heater;
+    w.trays = w.trays.filter(tr=> tr.pos < BELT_LEN+140);   // retire off the end
   }
-  function nearestWorld(pos){
-    let best=null,bd=1e9; for(const wt of world.trays){ const d=Math.abs(wt.pos-pos); if(d<bd&&d<120){bd=d;best=wt;} } return best;
+  function nearestWorld(w, pos){
+    let best=null,bd=1e9; for(const wt of w.trays){ const d=Math.abs(wt.pos-pos); if(d<bd&&d<120){bd=d;best=wt;} } return best;
   }
 
-  // ---- build controller inputs from actual world state ----
-  function senseInputs(){
+  // ---- build controller inputs from a lane's actual world state ----
+  function senseInputs(w){
     const sense=[false,false,false];
     for (let k=0;k<3;k++){
-      if (k===2 && world.blindMarsh) continue;              // blinded sensor
-      sense[k] = world.trays.some(tr=>Math.abs(tr.pos-STATIONS[k].pos)<SENSE_WIN);
+      if (k===2 && w.blindMarsh) continue;                  // blinded sensor
+      sense[k] = w.trays.some(tr=>Math.abs(tr.pos-STATIONS[k].pos)<SENSE_WIN);
     }
-    const tunnel_entry = world.trays.some(tr=>Math.abs(tr.pos-TUNNEL.entry)<SENSE_WIN);
-    const tunnel_exit  = world.trays.some(tr=>Math.abs(tr.pos-TUNNEL.exit)<SENSE_WIN);
-    // `run` is the operator/E-stop (machine enabled) — separate from the sim
-    // transport (play/pause/step). For this demo the line is always enabled, so
-    // stepping the clock still moves the belt.
-    return { sense, tunnel_entry, tunnel_exit, tunnel_temp:world.temp, confirm:world.confirm.slice(), run:true, t:sim.t*1000 };
+    const tunnel_entry = w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.entry)<SENSE_WIN);
+    const tunnel_exit  = w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.exit)<SENSE_WIN);
+    // `run` = operator/E-stop (always enabled here), separate from sim transport.
+    return { sense, tunnel_entry, tunnel_exit, tunnel_temp:w.temp, confirm:w.confirm.slice(), run:true, t:sim.t*1000 };
   }
 
-  // ---- signal history for the timeline (AdvantageScope-style) ----
-  const history=[]; const HIST_MAX=9000;
-  function pushSample(inp,out){
-    history.push({ t:sim.t, s:[inp.sense[0],inp.sense[1],inp.sense[2]], te:inp.tunnel_entry, tx:inp.tunnel_exit,
-                   temp:world.temp, belt:out.belt, g:[out.gate[0],out.gate[1],out.gate[2]],
-                   d:[out.dispense[0],out.dispense[1],out.dispense[2]], h:out.heater });
-    if (history.length>HIST_MAX) history.shift();
+  // ---- per-lane signal history for the timeline (AdvantageScope-style) ----
+  const HIST_MAX=9000;
+  function pushSample(e,inp,out){
+    e.hist.push({ t:sim.t, s:[inp.sense[0],inp.sense[1],inp.sense[2]], te:inp.tunnel_entry, tx:inp.tunnel_exit,
+                  temp:e.world.temp, belt:out.belt, g:[out.gate[0],out.gate[1],out.gate[2]],
+                  d:[out.dispense[0],out.dispense[1],out.dispense[2]], h:out.heater });
+    if (e.hist.length>HIST_MAX) e.hist.shift();
+  }
+  // count each finished tray as a good s'more (exactly 1·1·1) or mis-filled/lost
+  function tally(e){
+    for (const tr of e.ctrl.tracks){
+      if ((tr.status==="done"||tr.status==="lost") && !e.tallied[tr.id]){
+        e.tallied[tr.id]=true;
+        if (tr.status==="lost"){ e.bad++; continue; }
+        const wt = nearestWorld(e.world, tr.estPos);
+        const ok = wt && wt.counts.g===1 && wt.counts.c===1 && wt.counts.m===1;
+        ok ? e.good++ : e.bad++;
+      }
+    }
   }
 
-  // ---- fixed-step advance (deterministic) ----
+  // ---- fixed-step advance (deterministic); all lanes share the clock ----
   const STEP = 0.02; // 20ms control period
-  function advance(realDt){
-    sim.acc += realDt * sim.speed;
-    while (sim.acc >= STEP){
-      sim.acc -= STEP; sim.t += STEP; sim.tick++;
-      const inp = senseInputs();
-      const out = ctrl.tick(inp, STEP);
-      worldStep(out, STEP);
-      pushSample(inp, out);
+  function stepLanes(){
+    sim.t += STEP; sim.tick++;
+    for (const e of engines){
+      activeLog = e.log;
+      const inp = senseInputs(e.world);
+      const out = e.ctrl.tick(inp, STEP);
+      worldStep(e.world, e.ctrl, out, STEP);
+      pushSample(e, inp, out);
+      tally(e);
     }
   }
-  function stepOnce(){
-    sim.t += STEP; sim.tick++;
-    const inp = senseInputs(); const out = ctrl.tick(inp, STEP); worldStep(out, STEP); pushSample(inp, out);
-    renderAll();
-  }
+  function advance(realDt){ sim.acc += realDt*sim.speed; while (sim.acc>=STEP){ sim.acc-=STEP; stepLanes(); } }
+  function stepOnce(){ stepLanes(); renderAll(); }
 
   // =================== RENDER ===================
-  const cv = document.getElementById("line");
-  const ctx = cv.getContext("2d");
-  let CW=1600, CH=620, DPR=1;
-  function fitCanvas(){
-    const w = cv.clientWidth || 900;
-    DPR = Math.min(2, window.devicePixelRatio||1);
-    CW = w; CH = Math.round(w*0.40);
-    cv.width = Math.round(CW*DPR); cv.height = Math.round(CH*DPR);
-    ctx.setTransform(DPR,0,0,DPR,0,0);
-  }
+  // drawLine() renders to the "current" canvas target (set by setCanvas), so the
+  // same renderer serves the single big view and both compare lanes.
+  let ctx, CW=900, CH=360, DPR=1;
+  const TGT = {};
+  function mkTarget(id, aspect){ const el=document.getElementById(id); return el ? { el, ctx:el.getContext("2d"), cw:900, ch:360, aspect } : null; }
+  function fitTarget(t){ if(!t) return; const w=t.el.clientWidth||900; DPR=Math.min(2,window.devicePixelRatio||1); t.cw=w; t.ch=Math.round(w*t.aspect); t.el.width=Math.round(t.cw*DPR); t.el.height=Math.round(t.ch*DPR); t.ctx.setTransform(DPR,0,0,DPR,0,0); }
+  function setCanvas(t){ ctx=t.ctx; CW=t.cw; CH=t.ch; }
+  function fitAll(){ fitTarget(TGT.main); fitTarget(TGT.A); fitTarget(TGT.B); fitTL(); }
   const PADX=54, beltH=54;
   function beltY(){ return CH*0.52; }
   function X(mm){ return PADX + (mm/BELT_LEN)*(CW-2*PADX); }
@@ -669,10 +717,10 @@
     {l:"gate·G ↓",g:s=>!s.g[0], c:C.teal }, {l:"gate·C ↓",g:s=>!s.g[1], c:C.teal }, {l:"gate·M ↓",g:s=>!s.g[2],c:C.teal},
     {l:"heater",  g:s=>s.h,     c:C.ember}
   ];
-  function drawTimeline(){
+  function drawTimeline(history){
     tlx.clearRect(0,0,TW,TH);
     const LG=68, RG=10, top=6;
-    if (!history.length){ tlx.fillStyle=C.faint; tlx.font="11px "+MONO; tlx.textAlign="left"; tlx.fillText("press Run — signals trace here", LG, TH/2); return; }
+    if (!history || !history.length){ tlx.fillStyle=C.faint; tlx.font="11px "+MONO; tlx.textAlign="left"; tlx.fillText("press Run — signals trace here", LG, TH/2); return; }
     const t0=history[0].t, t1=Math.max(sim.t, t0+0.5);
     const xFor=t=>LG + (t-t0)/(t1-t0)*(TW-LG-RG);
     // time gridlines + labels
@@ -709,35 +757,52 @@
   }
 
   // ---- inspector / DOM render ----
-  let liveInputs=null;
   const $=id=>document.getElementById(id);
-  function renderAll(){
-    liveInputs = senseInputs();
-    drawLine();
-    drawTimeline();
-    // topbar
+
+  function renderAll(){ viewMode==="compare" ? renderCompare() : renderSingle(); }
+
+  function updateTopbar(e){
     $("tickVal").textContent = sim.tick;
     $("clockVal").textContent = sim.t.toFixed(1)+"s";
-    $("beltVal").textContent = Math.round(ctrl.out.belt);
-    $("trayCountVal").textContent = ctrl.tracks.filter(t=>t.status!=="done"&&t.status!=="lost").length;
-    $("doneVal").textContent = ctrl.tracks.filter(t=>t.status==="done").length;
-    const anyLost = ctrl.tracks.some(t=>t.status==="lost");
+    $("beltVal").textContent = Math.round(e.ctrl.out.belt);
+    $("trayCountVal").textContent = e.ctrl.tracks.filter(t=>t.status!=="done"&&t.status!=="lost").length;
+    $("doneVal").textContent = e.ctrl.tracks.filter(t=>t.status==="done").length;
+    const lost = engines.some(x=>x.ctrl.tracks.some(t=>t.status==="lost"));
     const pill=$("statePill"), txt=$("stateText");
-    if (anyLost){ pill.className="pill fault"; txt.textContent="FAULT"; }
+    if (lost){ pill.className="pill fault"; txt.textContent="FAULT"; }
     else if (sim.playing){ pill.className="pill run"; txt.textContent="RUNNING"; }
     else { pill.className="pill stop"; txt.textContent="PAUSED"; }
-    // inputs
+  }
+
+  function renderSingle(){
+    const e=engines[0]; activate(e); liveInputs=senseInputs(e.world);
+    setCanvas(TGT.main); drawLine(); drawTimeline(e.hist);
+    updateTopbar(e);
     setIO("in-s0",liveInputs.sense[0]); setIO("in-s1",liveInputs.sense[1]); setIO("in-s2",liveInputs.sense[2]);
     setIO("in-te",liveInputs.tunnel_entry); setIO("in-tx",liveInputs.tunnel_exit);
-    $("in-temp").textContent=Math.round(liveInputs.tunnel_temp)+"°";
-    $("in-temp").className="val"+(world.heaterOn?" hot":"");
-    // outputs
-    $("out-belt").textContent=Math.round(ctrl.out.belt);
-    for (let k=0;k<3;k++){ const el=$("out-g"+k); const jam=(k===1&&world.jamChoc); el.textContent=jam?"JAM":(ctrl.out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(ctrl.out.gate[k]?"":" off")); }
-    const disp = ctrl.out.dispense.map((d,i)=>d?STATIONS[i].key:null).filter(Boolean);
+    $("in-temp").textContent=Math.round(liveInputs.tunnel_temp)+"°"; $("in-temp").className="val"+(e.world.heaterOn?" hot":"");
+    $("out-belt").textContent=Math.round(e.ctrl.out.belt);
+    for (let k=0;k<3;k++){ const el=$("out-g"+k); const jam=(k===1&&e.world.jamChoc); el.textContent=jam?"JAM":(e.ctrl.out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(e.ctrl.out.gate[k]?"":" off")); }
+    const disp = e.ctrl.out.dispense.map((d,i)=>d?STATIONS[i].key:null).filter(Boolean);
     $("out-disp").textContent = disp.length?disp.join(","):"—"; $("out-disp").className="val"+(disp.length?" on":" off");
-    $("out-heat").textContent = ctrl.out.heater?"ON":"off"; $("out-heat").className="val"+(ctrl.out.heater?" hot":" off");
-    drawTrays();
+    $("out-heat").textContent = e.ctrl.out.heater?"ON":"off"; $("out-heat").className="val"+(e.ctrl.out.heater?" hot":" off");
+    drawTrays(); drawLog(e.log, "log");
+  }
+
+  function renderCompare(){
+    updateTopbar(engines[0]);
+    for (let i=0;i<engines.length;i++){
+      const e=engines[i]; activate(e); liveInputs=senseInputs(e.world);
+      setCanvas(i===0?TGT.A:TGT.B); drawLine();
+      $("lane"+i+"-name").textContent = CONTROLLERS[e.mode].name;
+      $("lane"+i+"-good").textContent = e.good;
+      $("lane"+i+"-bad").textContent  = e.bad;
+      const lost=e.ctrl.tracks.some(t=>t.status==="lost");
+      const st=$("lane"+i+"-state");
+      if (lost){ st.className="pill fault"; st.textContent="FAULT"; }
+      else if (sim.playing){ st.className="pill run"; st.textContent="RUNNING"; }
+      else { st.className="pill stop"; st.textContent="PAUSED"; }
+    }
   }
   function setIO(id,on){ const el=$(id); el.textContent=on?"1":"0"; el.className="val"+(on?" on":" off"); }
 
@@ -746,18 +811,16 @@
     const list = ctrl.tracks;
     if (!list.length){ rows.innerHTML='<tr><td colspan="5" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr>'; return; }
     const KEY=["g","c","m"];
-    // one dot per ingredient: believed vs ACTUAL. green=ok, red=missing (dispense
-    // failed), amber=double. The controller only knows `placed` (believed).
     const dot=(t,wt,i)=>{
-      const attempted = t.stage>i;                          // station processed by the controller
+      const attempted = t.stage>i;
       const act = wt ? wt.counts[KEY[i]] : (attempted?Math.max(1,t.placed[i]):0);
-      let col="#4a4139";                                    // pending
+      let col="#4a4139";
       if (attempted) col = act===0 ? "#e2493a" : (act===1 ? "#57c08a" : "#f0c24a");
       const lbl = act>=2 ? act : "";
       return `<span title="${KEY[i]}: believed ${t.placed[i]}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
     };
     rows.innerHTML = list.map(t=>{
-      const wt=nearestWorld(t.estPos);
+      const wt=nearestWorld(world, t.estPos);
       const drift = wt ? (t.estPos-wt.pos) : null;
       const dcls = drift!=null && Math.abs(drift)>40?"drift-crit":(drift!=null&&Math.abs(drift)>18?"drift-hi":"");
       const stat={moving:"moving",held:"held",toasting:"toast",done:"done",lost:"lost"}[t.status]||t.status;
@@ -771,12 +834,11 @@
     }).join("");
   }
 
-  // ---- decision log ----
-  const logLines=[];
-  function log(tms, msg, kind){ logLines.push({t:(tms/1000).toFixed(2), m:msg, k:kind||""}); if(logLines.length>120) logLines.shift(); drawLog(); }
-  function drawLog(){
-    const el=$("log");
-    el.innerHTML = logLines.slice(-60).map(l=>`<div class="line"><span class="t">${l.t}s</span><span class="m ${l.k}">${l.m}</span></div>`).join("");
+  // ---- decision log (per lane; log() routes to the active lane's array) ----
+  function log(tms, msg, kind){ activeLog.push({t:(tms/1000).toFixed(2), m:msg, k:kind||""}); if(activeLog.length>200) activeLog.shift(); }
+  function drawLog(logArr, elId){
+    const el=$(elId); if(!el) return;
+    el.innerHTML = logArr.slice(-60).map(l=>`<div class="line"><span class="t">${l.t}s</span><span class="m ${l.k}">${l.m}</span></div>`).join("");
     el.scrollTop = el.scrollHeight;
   }
 
@@ -784,38 +846,48 @@
   let last=0;
   function frame(ts){
     if(!last) last=ts; let dt=(ts-last)/1000; last=ts; if(dt>0.1) dt=0.1;
-    if (sim.playing){ advance(dt); beltPhase += (ctrl.out.belt>0? (reduceMotion?0:80*dt*sim.speed):0); }
+    if (sim.playing){ advance(dt); const anyBelt=engines.some(e=>e.ctrl.out.belt>0); beltPhase += anyBelt? (reduceMotion?0:80*dt*sim.speed):0; }
     renderAll();
     requestAnimationFrame(frame);
   }
 
   // =================== CONTROLS ===================
+  const applyAll = fn => engines.forEach(e=>fn(e.world));
   $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
   $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run"; stepOnce(); });
   $("resetBtn").addEventListener("click", ()=>{ reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
     ["failGBtn","dblCBtn","blindBtn","jamBtn"].forEach(id=>$(id).setAttribute("aria-pressed","false"));
-    log(0,"reset — controller = "+CONTROLLERS[ctrlMode].name,""); });
-  $("injectBtn").addEventListener("click", ()=>{ injectTray(); if(!logLines.length||true) log(sim.t*1000,"operator injected a tray at belt entry",""); });
+    log(0,"reset","") ; renderAll(); });
+  $("injectBtn").addEventListener("click", ()=>{ injectTray(); log(sim.t*1000,"operator injected a tray at belt entry",""); });
   $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
-  $("failGBtn").addEventListener("click", e=>{ const on=world.disp.graham!=="fail"; world.disp.graham=on?"fail":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"graham dispenser "+(on?"set to FAIL (places 0)":"restored"),"warn"); });
-  $("dblCBtn").addEventListener("click", e=>{ const on=world.disp.choc!=="double"; world.disp.choc=on?"double":"ok"; e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
-  $("blindBtn").addEventListener("click", e=>{ world.blindMarsh=!world.blindMarsh; e.currentTarget.setAttribute("aria-pressed",world.blindMarsh); log(sim.t*1000,"marshmallow sensor "+(world.blindMarsh?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
-  $("jamBtn").addEventListener("click", e=>{ world.jamChoc=!world.jamChoc; e.currentTarget.setAttribute("aria-pressed",world.jamChoc); log(sim.t*1000,"chocolate gate "+(world.jamChoc?"JAMMED shut":"freed"),"warn"); });
+  $("failGBtn").addEventListener("click", e=>{ const on=engines[0].world.disp.graham!=="fail"; applyAll(w=>w.disp.graham=on?"fail":"ok"); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"graham dispenser "+(on?"set to FAIL (places 0)":"restored"),"warn"); });
+  $("dblCBtn").addEventListener("click", e=>{ const on=engines[0].world.disp.choc!=="double"; applyAll(w=>w.disp.choc=on?"double":"ok"); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
+  $("blindBtn").addEventListener("click", e=>{ const on=!engines[0].world.blindMarsh; applyAll(w=>w.blindMarsh=on); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"marshmallow sensor "+(on?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
+  $("jamBtn").addEventListener("click", e=>{ const on=!engines[0].world.jamChoc; applyAll(w=>w.jamChoc=on); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate gate "+(on?"JAMMED shut":"freed"),"warn"); });
   function selectCtrl(mode){
-    ctrlMode=mode; $("playBtn").innerHTML="▶ Run";
+    modeA=mode; $("playBtn").innerHTML="▶ Run";
     $("ctrlOpen").classList.toggle("ctrl-active", mode==="open");
     $("ctrlClosed").classList.toggle("ctrl-active", mode==="closed");
-    reset(); injectTray();
-    log(0, "controller = "+CONTROLLERS[mode].name+" ("+CONTROLLERS[mode].blurb+")", "");
+    reset(); injectTray(); log(0, "controller = "+CONTROLLERS[mode].name+" ("+CONTROLLERS[mode].blurb+")", ""); renderAll();
   }
   $("ctrlOpen").addEventListener("click", ()=>selectCtrl("open"));
   $("ctrlClosed").addEventListener("click", ()=>selectCtrl("closed"));
-  window.addEventListener("resize", ()=>{ fitCanvas(); fitTL(); renderAll(); });
+  function setView(mode){
+    viewMode=mode; APP.dataset.view=mode; $("playBtn").innerHTML="▶ Run";
+    $("viewSingle").classList.toggle("ctrl-active", mode==="single");
+    $("viewCompare").classList.toggle("ctrl-active", mode==="compare");
+    fitAll(); reset(); injectTray(); renderAll();
+  }
+  $("viewSingle").addEventListener("click", ()=>setView("single"));
+  $("viewCompare").addEventListener("click", ()=>setView("compare"));
+  window.addEventListener("resize", ()=>{ fitAll(); renderAll(); });
 
-  // ---- boot: prime with one tray (demo one; architected for many) ----
-  fitCanvas(); fitTL(); reset(); injectTray();
-  log(0,"line ready — controller = "+CONTROLLERS[ctrlMode].name+" · press Run","");
-  renderAll(); drawLog();
+  // ---- boot ----
+  const APP=document.querySelector(".app"); APP.dataset.view="single";
+  TGT.main=mkTarget("line",0.40); TGT.A=mkTarget("laneA",0.30); TGT.B=mkTarget("laneB",0.30);
+  fitAll(); reset(); injectTray();
+  log(0,"line ready — controller = "+CONTROLLERS[modeA].name+" · press Run","");
+  renderAll();
   requestAnimationFrame(frame);
 })();
 </script>

@@ -18,6 +18,20 @@ against a simulated world — the same path the integration test exercises.
   oblivious while closed-loop reads `dispense_confirm` and recovers.
 - **Decision log** — the controller's own log messages cross the WASM boundary
   via a `host_log` import, so you read the C++ controller's reasoning live.
+- **✎ Studio — write your own controller** in JavaScript, Python, or C++ against a
+  layout-aware `io` API, then Run it on the line and step through it **line by
+  line** (🐞 Debug → Line / Tick) with a live state inspector:
+  - **JavaScript** runs in-page; stepping instruments the source with a
+    `__trace(line)` call and records per-line state.
+  - **Python** runs via Pyodide (loaded from CDN on first use); stepping uses
+    `sys.settrace`.
+  - **C++** is compiled to WebAssembly **entirely in the browser** (a vendored
+    clang+lld — run `make wasm-clang` once, ~60 MB, gitignored); stepping uses an
+    injected `host_trace(line)` callback reading live state back out of wasm.
+  - Each controller declares `requires`; **Check vs layout** validates it against
+    the active layout (the runtime analogue of the C++ compile-time contract
+    check). Monaco + Pyodide load from a CDN, so the Studio needs network;
+    the built-in views are fully offline.
 
 ## Run it locally
 

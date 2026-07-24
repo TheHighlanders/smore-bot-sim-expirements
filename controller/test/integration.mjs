@@ -14,7 +14,11 @@ const wasmBytes = fs.readFileSync(path.join(here, "..", "build", "controller.was
 // The only imports controller.wasm needs are three WASI stdio fns that are never
 // actually reached (vsnprintf writes to a buffer). Stub them.
 const noop = () => 0;
-const imports = { wasi_snapshot_preview1: { fd_close: noop, fd_seek: noop, fd_write: noop } };
+let logCount = 0;
+const imports = {
+  wasi_snapshot_preview1: { fd_close: noop, fd_seek: noop, fd_write: noop },
+  env: { host_log: () => { logCount++; } },   // controller decision log (ignored here)
+};
 
 // ---- Contract struct layout (wasm32, standard alignment) ----
 // Inputs (size 20): now_ms u32@0 | sense[3] b@4..6 | tunnel_entry@7 | tunnel_exit@8

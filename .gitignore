@@ -19,6 +19,10 @@
 # Host build output
 build/
 
+# GitHub Pages app: the compiled controller is a build artifact (derived from
+# controller/src). Rebuild with `make app`; CI builds it fresh before deploy.
+docs/app/controller.wasm
+
 # Repo-local toolchains (wasi-sdk downloaded by tools/get-wasi-sdk.sh) — large,
 # machine/arch-specific; re-download with `make chip-local`.
 .toolchains/

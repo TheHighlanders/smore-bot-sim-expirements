@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S'mores Line — Controller HMI</title>
+<!--
+  S'mores Line — Controller HMI. Single-file, self-contained; deliberately dark,
+  committed "control-room" theme. The controller is the REAL C++ logic
+  (controller/src/Controller.cpp) compiled to controller.wasm and driven across
+  the JS<->WASM boundary — see docs/simulator/REQUIREMENTS.md §4 for the contract.
+-->
+<style>
+  :root {
+    --bg:#17130f; --panel:#221c16; --panel-2:#1b1611; --screen:#0f0c0a;
+    --hair:#3a3129; --hair-soft:#2c251e;
+    --text:#f1e9dd; --muted:#a2937f; --muted-2:#7d6f5e;
+    --teal:#33bccb; --teal-dim:#1d6b73; --teal-ink:#0a2b2e;
+    --ember:#ff6a2c;
+    --graham:#cf9350; --choc:#5b3a26; --marsh:#f6efdf; --toast:#a9631f;
+    --good:#57c08a; --warn:#f0c24a; --crit:#e2493a;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif;
+    color-scheme:dark;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; }
+  .app {
+    min-height:100vh; background:
+      radial-gradient(120% 80% at 70% -10%, #241d15 0%, var(--bg) 55%) fixed;
+    color:var(--text); font-family:var(--sans);
+    display:flex; flex-direction:column; gap:14px; padding:16px;
+    max-width:1280px; margin:0 auto;
+  }
+
+  /* ---------- top status bar ---------- */
+  .topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:16px; flex-wrap:wrap;
+    border:1px solid var(--hair); border-radius:12px;
+    background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    padding:12px 16px;
+  }
+  .brand { display:flex; align-items:baseline; gap:12px; }
+  .brand .mark {
+    font-family:var(--mono); font-weight:700; letter-spacing:.14em;
+    color:var(--text); font-size:15px;
+  }
+  .brand .mark b { color:var(--ember); }
+  .brand .sub {
+    font-size:11px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--muted-2);
+  }
+  .cluster { display:flex; gap:10px; flex-wrap:wrap; }
+  .stat {
+    display:flex; flex-direction:column; gap:2px;
+    padding:6px 12px; border:1px solid var(--hair-soft); border-radius:8px;
+    background:var(--screen); min-width:74px;
+  }
+  .stat .k { font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted-2); }
+  .stat .v { font-family:var(--mono); font-size:15px; font-variant-numeric:tabular-nums; color:var(--text); }
+  .stat .v.accent { color:var(--teal); }
+
+  .pill {
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:var(--mono); font-size:12px; font-weight:600;
+    padding:5px 10px; border-radius:999px; letter-spacing:.04em;
+    border:1px solid transparent;
+  }
+  .pill .dot { width:7px; height:7px; border-radius:50%; background:currentColor; box-shadow:0 0 8px currentColor; }
+  .pill.run  { color:var(--good); background:rgba(87,192,138,.10); border-color:rgba(87,192,138,.35); }
+  .pill.stop { color:var(--muted); background:rgba(162,147,127,.08); border-color:var(--hair); }
+  .pill.fault{ color:var(--crit); background:rgba(226,73,58,.10); border-color:rgba(226,73,58,.40); }
+
+  /* ---------- main stage ---------- */
+  .stage { display:grid; grid-template-columns:1fr 340px; gap:14px; align-items:start; }
+  @media (max-width:900px){ .stage { grid-template-columns:1fr; } }
+
+  .panel {
+    border:1px solid var(--hair); border-radius:12px;
+    background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    overflow:hidden;
+  }
+  .panel-hd {
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:10px 14px; border-bottom:1px solid var(--hair-soft);
+  }
+  .panel-hd h2 {
+    margin:0; font-size:11px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--muted); font-weight:600;
+  }
+  .panel-hd .hint { font-family:var(--mono); font-size:10.5px; color:var(--muted-2); letter-spacing:.02em; }
+
+  .lineview .canvas-wrap { padding:8px 8px 4px; }
+  canvas#line { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
+  .tl-wrap { padding:8px 12px 12px; }
+  canvas#tl { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
+
+  .legend { display:flex; flex-wrap:wrap; gap:14px; padding:8px 16px 14px; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--muted); font-family:var(--mono); }
+  .legend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+  .legend i.ghost { background:transparent; border:1.5px dashed var(--teal); border-radius:3px; }
+
+  /* ---------- inspector rail ---------- */
+  .inspector { display:flex; flex-direction:column; gap:14px; }
+
+  table.grid { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:11.5px; }
+  table.grid th, table.grid td { text-align:left; padding:5px 14px; border-bottom:1px solid var(--hair-soft); }
+  table.grid th { color:var(--muted-2); font-weight:600; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; }
+  table.grid td { color:var(--text); font-variant-numeric:tabular-nums; }
+  table.grid td.num { text-align:right; }
+  .tag { font-family:var(--mono); font-size:10px; padding:1px 7px; border-radius:999px; letter-spacing:.03em; }
+  .tag.moving{ color:var(--teal); background:rgba(51,188,203,.12); }
+  .tag.held  { color:var(--warn); background:rgba(240,194,74,.12); }
+  .tag.toast { color:var(--ember); background:rgba(255,106,44,.14); }
+  .tag.done  { color:var(--good); background:rgba(87,192,138,.14); }
+  .tag.lost  { color:var(--crit); background:rgba(226,73,58,.16); }
+  .drift-hi { color:var(--warn); }
+  .drift-crit { color:var(--crit); }
+
+  .io-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--hair-soft); }
+  .io-col { background:var(--panel-2); padding:10px 14px; }
+  .io-col h3 { margin:0 0 8px; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted-2); }
+  .io-row { display:flex; align-items:center; justify-content:space-between; gap:8px; font-family:var(--mono); font-size:11px; padding:3px 0; }
+  .io-row .lbl { color:var(--muted); }
+  .io-row .val { font-variant-numeric:tabular-nums; color:var(--text); }
+  .io-row .val.on { color:var(--good); }
+  .io-row .val.off { color:var(--muted-2); }
+  .io-row .val.hot { color:var(--ember); }
+
+  .log { height:172px; overflow:auto; padding:8px 0; font-family:var(--mono); font-size:11px; }
+  .log .line { display:flex; gap:10px; padding:2px 14px; white-space:nowrap; }
+  .log .t { color:var(--teal-dim); font-variant-numeric:tabular-nums; }
+  .log .m { color:var(--muted); }
+  .log .m.evt { color:var(--text); }
+  .log .m.warn { color:var(--warn); }
+  .log .m.crit { color:var(--crit); }
+
+  /* ---------- control dock ---------- */
+  .dock {
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    border:1px solid var(--hair); border-radius:12px;
+    background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    padding:12px 16px;
+  }
+  .group { display:flex; align-items:center; gap:8px; }
+  .group + .group { padding-left:18px; border-left:1px solid var(--hair-soft); }
+  .group .glabel { font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted-2); margin-right:2px; }
+
+  button.btn {
+    font-family:var(--sans); font-size:12.5px; font-weight:600; color:var(--text);
+    background:var(--screen); border:1px solid var(--hair); border-radius:8px;
+    padding:8px 13px; cursor:pointer; display:inline-flex; align-items:center; gap:7px;
+    transition:border-color .15s, background .15s, color .15s, transform .05s;
+  }
+  button.btn:hover { border-color:var(--teal-dim); color:#fff; }
+  button.btn:active { transform:translateY(1px); }
+  button.btn:focus-visible { outline:2px solid var(--teal); outline-offset:2px; }
+  button.btn.primary { background:var(--teal); color:var(--teal-ink); border-color:var(--teal); }
+  button.btn.primary:hover { background:#4bd0df; }
+  button.btn[aria-pressed="true"] { border-color:var(--crit); color:var(--crit); background:rgba(226,73,58,.10); }
+  button.btn.ctrl-active { border-color:var(--teal); color:var(--teal); background:rgba(51,188,203,.12); }
+
+  /* ---------- compare view (side-by-side A/B) ---------- */
+  .app[data-view="compare"] .single-only { display:none; }
+  .app[data-view="single"]  .compare-only { display:none; }
+  .compare-view { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
+  @media (max-width:900px){ .compare-view { grid-template-columns:1fr; } }
+  .lane-hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    padding:9px 14px; border-bottom:1px solid var(--hair-soft); }
+  .lane-hd .lane-name { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:.03em; color:var(--text); }
+  .lane-tally { display:flex; gap:12px; font-family:var(--mono); font-size:11.5px; font-variant-numeric:tabular-nums; }
+  .lane-tally .ok  { color:var(--good); }
+  .lane-tally .bad { color:var(--crit); }
+  .lane-canvas-wrap { padding:8px 8px 2px; }
+  canvas.lane-canvas { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
+  .lane-sub { font-size:9.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--muted-2);
+    padding:8px 14px 2px; }
+  .lane-log { height:150px; overflow:auto; padding:6px 0 8px; }
+  button.btn .ic { width:12px; height:12px; }
+
+  input[type=range] { -webkit-appearance:none; appearance:none; height:4px; width:130px; border-radius:3px;
+    background:var(--hair); outline:none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:15px; height:15px; border-radius:50%;
+    background:var(--teal); cursor:pointer; box-shadow:0 0 0 3px rgba(51,188,203,.18); }
+  input[type=range]::-moz-range-thumb { width:15px; height:15px; border:none; border-radius:50%; background:var(--teal); cursor:pointer; }
+  .speedval { font-family:var(--mono); font-size:12px; color:var(--teal); min-width:34px; font-variant-numeric:tabular-nums; }
+
+  .footnote { text-align:center; font-size:11px; color:var(--muted-2); font-family:var(--mono); letter-spacing:.02em; }
+  .footnote b { color:var(--muted); font-weight:600; }
+
+  @media (prefers-reduced-motion: reduce) { .pill .dot { box-shadow:none; } }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div id="wasmErr" style="display:none;margin:18px;padding:16px 18px;border:1px solid var(--crit);
+       background:rgba(226,73,58,.10);color:var(--crit);border-radius:8px;line-height:1.5;">
+    <b>controller.wasm didn't load.</b> This page runs the real compiled C++ controller and must be
+    served over http(s) — <code>fetch()</code> is blocked on <code>file://</code>.
+    Serve the folder and reload, e.g. <code>python3 -m http.server</code> then open
+    <code>http://localhost:8000/</code>. (On GitHub Pages it just works.)
+  </div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">S'<b>MORES</b> LINE</span>
+      <span class="sub">Controller HMI · live WASM controller</span>
+    </div>
+    <div class="cluster">
+      <span id="statePill" class="pill stop"><span class="dot"></span><span id="stateText">STOPPED</span></span>
+      <div class="stat"><span class="k">Tick</span><span class="v" id="tickVal">0</span></div>
+      <div class="stat"><span class="k">Clock</span><span class="v" id="clockVal">0.0s</span></div>
+      <div class="stat"><span class="k">Belt cmd</span><span class="v accent" id="beltVal">0</span></div>
+      <div class="stat"><span class="k">Trays</span><span class="v" id="trayCountVal">0</span></div>
+      <div class="stat"><span class="k">Done</span><span class="v" id="doneVal">0</span></div>
+    </div>
+  </header>
+
+  <main class="stage single-only">
+    <section class="panel lineview">
+      <div class="panel-hd">
+        <h2>Line view</h2>
+        <span class="hint">solid = actual tray · <span style="color:var(--teal)">dashed = controller estimate</span></span>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="line" width="1600" height="620" role="img"
+          aria-label="Conveyor line: three dispenser stations then a heating tunnel, with trays and the controller's estimated positions"></canvas>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--graham)"></i>graham</span>
+        <span><i style="background:var(--choc)"></i>chocolate</span>
+        <span><i style="background:var(--marsh)"></i>marshmallow</span>
+        <span><i style="background:var(--toast)"></i>toasted</span>
+        <span><i class="ghost"></i>estimate</span>
+        <span><i style="background:var(--good)"></i>sensor active</span>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <section class="panel">
+        <div class="panel-hd"><h2>Tray tracking</h2><span class="hint">est vs actual</span></div>
+        <div style="overflow-x:auto">
+          <table class="grid" id="trayTable">
+            <thead><tr><th>ID</th><th>Fill<span style="color:var(--muted-2)"> g·c·m</span></th><th class="num">Est</th><th class="num">Drift</th><th>Status</th></tr></thead>
+            <tbody id="trayRows"><tr><td colspan="5" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-hd"><h2>I/O contract</h2><span class="hint">live · this tick</span></div>
+        <div class="io-grid">
+          <div class="io-col">
+            <h3>Inputs → controller</h3>
+            <div class="io-row"><span class="lbl">sense[graham]</span><span class="val off" id="in-s0">0</span></div>
+            <div class="io-row"><span class="lbl">sense[choc]</span><span class="val off" id="in-s1">0</span></div>
+            <div class="io-row"><span class="lbl">sense[marsh]</span><span class="val off" id="in-s2">0</span></div>
+            <div class="io-row"><span class="lbl">tunnel_entry</span><span class="val off" id="in-te">0</span></div>
+            <div class="io-row"><span class="lbl">tunnel_exit</span><span class="val off" id="in-tx">0</span></div>
+            <div class="io-row"><span class="lbl">tunnel_temp</span><span class="val" id="in-temp">20&deg;</span></div>
+          </div>
+          <div class="io-col">
+            <h3>Outputs → world</h3>
+            <div class="io-row"><span class="lbl">belt_speed</span><span class="val" id="out-belt">0</span></div>
+            <div class="io-row"><span class="lbl">gate[graham]</span><span class="val" id="out-g0">open</span></div>
+            <div class="io-row"><span class="lbl">gate[choc]</span><span class="val" id="out-g1">open</span></div>
+            <div class="io-row"><span class="lbl">gate[marsh]</span><span class="val" id="out-g2">open</span></div>
+            <div class="io-row"><span class="lbl">dispense[·]</span><span class="val off" id="out-disp">—</span></div>
+            <div class="io-row"><span class="lbl">heater</span><span class="val off" id="out-heat">off</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-hd"><h2>Decision log</h2><span class="hint">controller</span></div>
+        <div class="log" id="log"></div>
+      </section>
+    </aside>
+  </main>
+
+  <section class="panel timeline single-only">
+    <div class="panel-hd"><h2>Signal history</h2><span class="hint">inputs &amp; outputs over time — whole run in one view</span></div>
+    <div class="tl-wrap"><canvas id="tl" width="1600" height="214" role="img"
+      aria-label="Timeline of controller input and output signals over the whole run"></canvas></div>
+  </section>
+
+  <section class="compare-view compare-only">
+    <section class="panel lane-col">
+      <div class="lane-hd">
+        <span class="lane-name" id="lane0-name">Open-loop</span>
+        <span class="lane-tally"><span class="ok">✓ good <b id="lane0-good">0</b></span><span class="bad">✗ mis-filled <b id="lane0-bad">0</b></span></span>
+        <span class="pill stop" id="lane0-state"><span class="dot"></span>PAUSED</span>
+      </div>
+      <div class="lane-canvas-wrap"><canvas id="laneA" class="lane-canvas" width="1200" height="620" role="img" aria-label="Lane A line view"></canvas></div>
+      <div class="lane-sub">Signal history</div>
+      <div class="lane-canvas-wrap"><canvas id="laneA-tl" class="lane-canvas" width="1200" height="400" role="img" aria-label="Lane A signal history"></canvas></div>
+      <div class="lane-sub">Decision log</div>
+      <div class="log lane-log" id="lane0-log"></div>
+    </section>
+    <section class="panel lane-col">
+      <div class="lane-hd">
+        <span class="lane-name" id="lane1-name">Closed-loop</span>
+        <span class="lane-tally"><span class="ok">✓ good <b id="lane1-good">0</b></span><span class="bad">✗ mis-filled <b id="lane1-bad">0</b></span></span>
+        <span class="pill stop" id="lane1-state"><span class="dot"></span>PAUSED</span>
+      </div>
+      <div class="lane-canvas-wrap"><canvas id="laneB" class="lane-canvas" width="1200" height="620" role="img" aria-label="Lane B line view"></canvas></div>
+      <div class="lane-sub">Signal history</div>
+      <div class="lane-canvas-wrap"><canvas id="laneB-tl" class="lane-canvas" width="1200" height="400" role="img" aria-label="Lane B signal history"></canvas></div>
+      <div class="lane-sub">Decision log</div>
+      <div class="log lane-log" id="lane1-log"></div>
+    </section>
+  </section>
+
+  <footer class="dock">
+    <div class="group">
+      <span class="glabel">View</span>
+      <button class="btn ctrl-sel ctrl-active" id="viewSingle" title="One controller, full instrumentation">Single</button>
+      <button class="btn ctrl-sel" id="viewCompare" title="Two controllers side by side on identical stimulus">Compare A/B</button>
+    </div>
+    <div class="group">
+      <button class="btn primary" id="playBtn" aria-label="Play or pause">▶ Run</button>
+      <button class="btn" id="stepBtn" aria-label="Advance one control tick">⏭ Step</button>
+      <button class="btn" id="resetBtn" aria-label="Reset simulation">↺ Reset</button>
+    </div>
+    <div class="group single-only">
+      <span class="glabel">Controller</span>
+      <button class="btn ctrl-sel ctrl-active" id="ctrlOpen" title="Assumes each dispense worked; ignores the confirm sensor">Open-loop</button>
+      <button class="btn ctrl-sel" id="ctrlClosed" title="Reads dispense_confirm; retries a miss, flags an over-fill">Closed-loop</button>
+    </div>
+    <div class="group">
+      <span class="glabel">Sim&nbsp;speed</span>
+      <input type="range" id="speed" min="0.25" max="4" step="0.25" value="1" aria-label="Simulation speed">
+      <span class="speedval" id="speedVal">1.0×</span>
+    </div>
+    <div class="group">
+      <span class="glabel">Feed</span>
+      <button class="btn" id="injectBtn">＋ Inject tray</button>
+    </div>
+    <div class="group">
+      <span class="glabel">Fault&nbsp;inject</span>
+      <button class="btn" id="failGBtn" aria-pressed="false" title="Graham dispenser fails to fire — no graham placed; the open-loop controller never notices">✕ Fail graham disp</button>
+      <button class="btn" id="dblCBtn" aria-pressed="false" title="Chocolate dispenser double-fires — two chocolates placed on one command">✚ Double choc disp</button>
+      <button class="btn" id="blindBtn" aria-pressed="false" title="Controller must dead-reckon through the blinded marshmallow sensor">◎ Blind marsh sensor</button>
+      <button class="btn" id="jamBtn" aria-pressed="false" title="Chocolate gate won't open — tray gets stuck, controller flags it">🔒 Jam choc gate</button>
+    </div>
+  </footer>
+
+  <p class="footnote">Mockup — the on-screen brain is a <b>JS stand-in controller</b> behind the same input→output contract the real
+    <b>WASM controller</b> will implement. Physics &amp; sensors are simulated; drift is deliberate so you can watch it correct at each sensor.</p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- palette (mirrors CSS tokens; canvas needs literals) ----
+  const C = {
+    screen:"#0f0c0a", belt:"#28211a", beltEdge:"#3a3129", rail:"#1c1712",
+    hair:"#3a3129", text:"#f1e9dd", muted:"#a2937f", faint:"#6d6152",
+    teal:"#33bccb", ember:"#ff6a2c",
+    graham:"#cf9350", choc:"#5b3a26", marsh:"#f6efdf", toast:"#a9631f",
+    good:"#57c08a", warn:"#f0c24a", crit:"#e2493a"
+  };
+
+  // ---- geometry (world units = mm), see REQUIREMENTS §2 ----
+  const BELT_LEN = 1200;
+  const STATIONS = [
+    { key:"graham", name:"GRAHAM",     pos:300, color:C.graham },
+    { key:"choc",   name:"CHOCOLATE",  pos:600, color:C.choc   },
+    { key:"marsh",  name:"MARSHMALLOW",pos:900, color:C.marsh  }
+  ];
+  const TUNNEL = { entry:1050, exit:1185 };
+  const NOMINAL_SPEED = 110;      // mm/s the controller commands
+  const ACTUAL_SLIP   = 0.965;    // world moves a bit slower -> estimate drifts high
+  const SENSE_WIN = 22;           // mm: sensor trips within this of its point
+  const TRAY_W = 64;
+  const DISPENSE_MS = 650;        // controller keeps the dispenser output ON this long
+  const DROP_AT     = 450;        // ms of continuous output before a unit actually drops
+  const TOAST_MS = 3800;          // controller's tunnel dwell time
+  const E_TARGET = 420;           // heat units a marshmallow must accumulate to toast
+
+  // ---- engine: one self-contained "lane" = independent world + controller ----
+  // Compare mode runs two engines in parallel on ONE shared clock and IDENTICAL
+  // stimulus (same tray injections + same faults), so outcomes diverge fairly.
+  let engines=[], sim, viewMode="single", modeA="open", modeB="closed";
+  // "current target" globals set by activate()/setCanvas(); the renderer reads these.
+  let world, ctrl, liveInputs=null, activeLog=[];
+
+  // ---- REAL controller: compiled C++ -> controller.wasm, one instance per lane ----
+  // Contract struct layout (wasm32): Inputs(20B) now_ms@0 | sense[3]@4 | t_entry@7
+  // | t_exit@8 | temp f32@12 | confirm[3]@16 | run@19.  Outputs(12B) belt f32@0
+  // | gate[3]@4 | dispense[3]@7 | tunnel_gate@10 | heater@11.
+  let WASM_MODULE = null;
+  async function loadWasm(){ const r = await fetch("./controller.wasm"); WASM_MODULE = await WebAssembly.compile(await r.arrayBuffer()); }
+  const _dec = new TextDecoder();
+  const _ST  = ["moving","held","toasting","done","lost"];
+  function makeWasmCtrl(mode, e){
+    let inst;
+    const cstr = (p) => { const u = new Uint8Array(inst.exports.memory.buffer); let q = p; while (u[q]) q++; return _dec.decode(u.subarray(p, q)); };
+    const imp = {
+      wasi_snapshot_preview1: { fd_close:()=>0, fd_seek:()=>0, fd_write:()=>0 },
+      env: { host_log:(kp,mp)=>{ e.log.push({ t:(sim?sim.t:0).toFixed(2), m:cstr(mp), k:cstr(kp) }); if (e.log.length>200) e.log.shift(); } },
+    };
+    inst = new WebAssembly.Instance(WASM_MODULE, imp);
+    inst.exports._initialize();
+    inst.exports.init(mode === "closed" ? 1 : 0);
+    return { inst, inPtr: inst.exports.inputs_ptr(), outPtr: inst.exports.outputs_ptr() };
+  }
+  function writeInputs(w, inp){
+    const dv = new DataView(w.inst.exports.memory.buffer), p = w.inPtr;
+    dv.setUint32(p+0, Math.round(inp.t), true);
+    for (let k=0;k<3;k++) dv.setUint8(p+4+k, inp.sense[k]?1:0);
+    dv.setUint8(p+7, inp.tunnel_entry?1:0); dv.setUint8(p+8, inp.tunnel_exit?1:0);
+    dv.setFloat32(p+12, inp.tunnel_temp, true);
+    for (let k=0;k<3;k++) dv.setUint8(p+16+k, inp.confirm[k]|0);
+    dv.setUint8(p+19, inp.run?1:0);
+  }
+  function readCtrl(e){
+    const w = e.wasm, dv = new DataView(w.inst.exports.memory.buffer), p = w.outPtr, o = e.ctrl.out;
+    o.belt = dv.getFloat32(p+0, true);
+    for (let k=0;k<3;k++){ o.gate[k] = !!dv.getUint8(p+4+k); o.dispense[k] = !!dv.getUint8(p+7+k); }
+    o.tunnelGateOpen = !!dv.getUint8(p+10); o.heater = !!dv.getUint8(p+11);
+    const n = w.inst.exports.track_count(), f = (i,fl)=>w.inst.exports.track_field(i,fl), arr = [];
+    for (let i=0;i<n;i++) arr.push({ id:f(i,0)|0, estPos:f(i,1), stage:f(i,2)|0, status:_ST[f(i,3)|0]||"moving", placed:[f(i,4)|0,f(i,5)|0,f(i,6)|0] });
+    e.ctrl.tracks = arr;
+  }
+  function makeEngine(mode){
+    const e = {
+      mode,
+      world:{ trays:[], nextId:1, temp:20, heaterOn:false, blindMarsh:false, jamChoc:false,
+              disp:{graham:"ok",choc:"ok",marsh:"ok"}, confirm:[0,0,0] },
+      ctrl:{ out:{ belt:0, gate:[true,true,true], dispense:[false,false,false], heater:false, tunnelGateOpen:true }, tracks:[] },
+      log:[], hist:[], good:0, bad:0, tallied:{}
+    };
+    e.wasm = makeWasmCtrl(mode, e);
+    return e;
+  }
+  function activate(e){ world=e.world; ctrl=e.ctrl; activeLog=e.log; }
+
+  function reset(){
+    engines = viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)] : [makeEngine(modeA)];
+    sim = { t:0, tick:0, playing:false, speed:1, acc:0 };
+    activate(engines[0]);
+    renderAll();
+  }
+
+  // stimulus is shared across all lanes
+  function injectTray(){
+    for (const e of engines) e.world.trays.push({ id:e.world.nextId++, pos:-TRAY_W/2, counts:{g:0,c:0,m:0}, toast:0 });
+  }
+
+  // ---------------------------------------------------------------
+  //  CONTROLLER (REQUIREMENTS §4/§5/§6) — the real C++ logic, compiled to WASM.
+  //  Inputs -> tick() -> Outputs + track state, driven by the helpers above.
+  // ---------------------------------------------------------------
+  // Controller registry: display metadata for each variant. Both are the same
+  // compiled controller.wasm module, selected at init(mode).
+  const CONTROLLERS = {
+    open:   { name:"Open-loop",   blurb:"assumes each dispense worked; ignores the confirm sensor" },
+    closed: { name:"Closed-loop", blurb:"reads dispense_confirm; retries a miss, flags an over-fill" }
+  };
+  // NOTE: the controller logic itself is NOT here — it's the real C++ in
+  // controller/src/Controller.cpp, compiled to controller.wasm and driven per
+  // lane via makeWasmCtrl/writeInputs/readCtrl above. Both variants (open/closed)
+  // are the same compiled module, selected by init(mode). This registry only
+  // supplies their display names.
+
+  // ---- world step: apply a lane's controller outputs to that lane's physics ----
+  function worldStep(w, c, out, dt){
+    // belt physics: actual travel a bit less than commanded (slip) -> drift
+    for (const tr of w.trays){
+      let blocked=false;                                 // held by a CLOSED gate just ahead
+      for (let k=0;k<3;k++){
+        const gateX = STATIONS[k].pos;
+        const closed = !out.gate[k] || (k===1 && w.jamChoc);
+        if (closed && tr.pos < gateX && tr.pos > gateX-70) blocked=true;
+      }
+      // the tunnel gate holds a tray at the mouth of the tunnel while it toasts
+      // (belt keeps running underneath; the controller drops the gate to dwell).
+      if (!out.tunnelGateOpen && tr.pos > TUNNEL.entry-30 && tr.pos < TUNNEL.exit) blocked=true;
+      tr._blocked=blocked;
+      if (!blocked) tr.pos += out.belt * ACTUAL_SLIP * dt;
+    }
+    // dispensers: the actuator output must run long enough (DROP_AT) to actually
+    // drop a unit. Flaky "fail" misfires the FIRST attempt; a retry succeeds.
+    w.dispOn = w.dispOn||[0,0,0]; w.lastAtt = w.lastAtt||[0,0,0];
+    for (let k=0;k<3;k++){
+      if (out.dispense[k]){
+        w.dispOn[k] += dt*1000;
+        if (w.dispOn[k]-w.lastAtt[k] >= DROP_AT){        // output has run long enough -> a drop attempt
+          w.lastAtt[k]=w.dispOn[k];
+          const wt = w.trays.find(t=>Math.abs(t.pos-STATIONS[k].pos)<70);
+          if (wt){
+            wt._att=wt._att||[0,0,0]; wt._att[k]++;
+            const mode=w.disp[STATIONS[k].key];
+            let add=1;
+            if (mode==="double") add=2;
+            else if (mode==="fail") add=(wt._att[k]===1)?0:1;
+            wt.counts[["g","c","m"][k]] += add;
+            w.confirm[k]=add;
+            const nm=STATIONS[k].name;
+            if (add===0)      log(sim.t*1000, nm+": output ran "+DROP_AT+"ms but dispenser MISFIRED — nothing dropped on #"+wt.id, "crit");
+            else if (add===2) log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dispenser DOUBLE-dropped (2) on #"+wt.id, "warn");
+            else              log(sim.t*1000, nm+": output ran "+DROP_AT+"ms → dropped a "+STATIONS[k].key+" on #"+wt.id, "evt");
+          } else { w.confirm[k]=0; }
+        }
+      } else { w.dispOn[k]=0; w.lastAtt[k]=0; }
+    }
+    // tunnel physics: heater raises temp; a marshmallow in the beam accumulates
+    // heat energy and toasts once it passes E_TARGET.
+    const targetTemp = out.heater ? 205 : 20;
+    w.temp += (targetTemp - w.temp) * Math.min(1, dt*0.9);
+    w.heaterOn = out.heater;
+    if (w.heaterOn){
+      for (const wt of w.trays){
+        if (wt.pos>=TUNNEL.entry-40 && wt.pos<=TUNNEL.exit+40 && wt.counts.m>0){
+          wt.energy=(wt.energy||0) + Math.max(0, w.temp-20)*dt;
+          wt.toast=Math.min(1, wt.energy/E_TARGET);
+          if (wt.energy>=E_TARGET && !wt._toasted){ wt._toasted=true;
+            log(sim.t*1000, "marshmallow on #"+wt.id+" toasted — accumulated "+Math.round(wt.energy)+" heat units (≥ "+E_TARGET+")", "evt"); }
+        }
+      }
+    }
+    w.trays = w.trays.filter(tr=> tr.pos < BELT_LEN+140);   // retire off the end
+  }
+  function nearestWorld(w, pos){
+    let best=null,bd=1e9; for(const wt of w.trays){ const d=Math.abs(wt.pos-pos); if(d<bd&&d<120){bd=d;best=wt;} } return best;
+  }
+
+  // ---- build controller inputs from a lane's actual world state ----
+  function senseInputs(w){
+    const sense=[false,false,false];
+    for (let k=0;k<3;k++){
+      if (k===2 && w.blindMarsh) continue;                  // blinded sensor
+      sense[k] = w.trays.some(tr=>Math.abs(tr.pos-STATIONS[k].pos)<SENSE_WIN);
+    }
+    const tunnel_entry = w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.entry)<SENSE_WIN);
+    const tunnel_exit  = w.trays.some(tr=>Math.abs(tr.pos-TUNNEL.exit)<SENSE_WIN);
+    // `run` = operator/E-stop (always enabled here), separate from sim transport.
+    return { sense, tunnel_entry, tunnel_exit, tunnel_temp:w.temp, confirm:w.confirm.slice(), run:true, t:sim.t*1000 };
+  }
+
+  // ---- per-lane signal history for the timeline (AdvantageScope-style) ----
+  const HIST_MAX=9000;
+  function pushSample(e,inp,out){
+    e.hist.push({ t:sim.t, s:[inp.sense[0],inp.sense[1],inp.sense[2]], te:inp.tunnel_entry, tx:inp.tunnel_exit,
+                  temp:e.world.temp, belt:out.belt, g:[out.gate[0],out.gate[1],out.gate[2]],
+                  d:[out.dispense[0],out.dispense[1],out.dispense[2]], h:out.heater });
+    if (e.hist.length>HIST_MAX) e.hist.shift();
+  }
+  // count each finished tray as a good s'more (exactly 1·1·1) or mis-filled/lost
+  function tally(e){
+    for (const tr of e.ctrl.tracks){
+      if ((tr.status==="done"||tr.status==="lost") && !e.tallied[tr.id]){
+        e.tallied[tr.id]=true;
+        if (tr.status==="lost"){ e.bad++; continue; }
+        const wt = nearestWorld(e.world, tr.estPos);
+        const ok = wt && wt.counts.g===1 && wt.counts.c===1 && wt.counts.m===1;
+        ok ? e.good++ : e.bad++;
+      }
+    }
+  }
+
+  // ---- fixed-step advance (deterministic); all lanes share the clock ----
+  const STEP = 0.02; // 20ms control period
+  function stepLanes(){
+    sim.t += STEP; sim.tick++;
+    for (const e of engines){
+      const inp = senseInputs(e.world);
+      writeInputs(e.wasm, inp);         // marshal world -> Inputs struct in wasm memory
+      e.wasm.inst.exports.tick();       // run the REAL compiled C++ controller
+      readCtrl(e);                      // read Outputs struct + track state back out
+      worldStep(e.world, e.ctrl, e.ctrl.out, STEP);
+      pushSample(e, inp, e.ctrl.out);
+      tally(e);
+    }
+  }
+  function advance(realDt){ sim.acc += realDt*sim.speed; while (sim.acc>=STEP){ sim.acc-=STEP; stepLanes(); } }
+  function stepOnce(){ stepLanes(); renderAll(); }
+
+  // =================== RENDER ===================
+  // drawLine() renders to the "current" canvas target (set by setCanvas), so the
+  // same renderer serves the single big view and both compare lanes.
+  let ctx, CW=900, CH=360, DPR=1;
+  const TGT = {};
+  function mkTarget(id, aspect){ const el=document.getElementById(id); return el ? { el, ctx:el.getContext("2d"), cw:900, ch:360, aspect } : null; }
+  function fitTarget(t){ if(!t) return; const w=t.el.clientWidth||900; DPR=Math.min(2,window.devicePixelRatio||1); t.cw=w; t.ch=Math.round(w*t.aspect); t.el.width=Math.round(t.cw*DPR); t.el.height=Math.round(t.ch*DPR); t.ctx.setTransform(DPR,0,0,DPR,0,0); }
+  function setCanvas(t){ ctx=t.ctx; CW=t.cw; CH=t.ch; }
+  function fitAll(){ fitTarget(TGT.main); fitTarget(TGT.A); fitTarget(TGT.B); fitTLT(TLT.single); fitTLT(TLT.A); fitTLT(TLT.B); }
+  const PADX=54, beltH=54;
+  function beltY(){ return CH*0.52; }
+  function X(mm){ return PADX + (mm/BELT_LEN)*(CW-2*PADX); }
+
+  let beltPhase=0;
+  function drawLine(){
+    ctx.clearRect(0,0,CW,CH);
+    const by=beltY();
+
+    // heat glow behind tunnel
+    if (world.heaterOn){
+      const gx=X((TUNNEL.entry+TUNNEL.exit)/2);
+      const g=ctx.createRadialGradient(gx,by,4,gx,by,150);
+      const a = reduceMotion?0.30:0.24+0.10*Math.sin(sim.t*6);
+      g.addColorStop(0,`rgba(255,106,44,${a})`); g.addColorStop(1,"rgba(255,106,44,0)");
+      ctx.fillStyle=g; ctx.fillRect(gx-160,by-150,320,300);
+    }
+
+    // belt body
+    roundRect(X(0)-18, by-beltH/2, X(BELT_LEN)-X(0)+36, beltH, 9);
+    ctx.fillStyle=C.belt; ctx.fill();
+    ctx.strokeStyle=C.beltEdge; ctx.lineWidth=1; ctx.stroke();
+    // belt tread stripes (motion)
+    ctx.save(); ctx.beginPath(); roundRect(X(0)-18,by-beltH/2,X(BELT_LEN)-X(0)+36,beltH,9); ctx.clip();
+    ctx.strokeStyle="rgba(255,255,255,.045)"; ctx.lineWidth=2;
+    const gap=26; const off = (beltPhase % gap);
+    for (let x=X(0)-18-gap+off; x<X(BELT_LEN)+36; x+=gap){ ctx.beginPath(); ctx.moveTo(x,by-beltH/2); ctx.lineTo(x-12,by+beltH/2); ctx.stroke(); }
+    ctx.restore();
+
+    // stations
+    for (let k=0;k<STATIONS.length;k++){
+      const st=STATIONS[k], sx=X(st.pos);
+      // frame
+      ctx.strokeStyle=C.hair; ctx.lineWidth=1.5;
+      roundRect(sx-46, by-118, 92, 78, 8); ctx.fillStyle="rgba(255,255,255,.02)"; ctx.fill(); ctx.stroke();
+      // hopper + ingredient swatch
+      ctx.fillStyle=st.color;
+      ctx.beginPath(); ctx.moveTo(sx-20,by-112); ctx.lineTo(sx+20,by-112); ctx.lineTo(sx+9,by-74); ctx.lineTo(sx-9,by-74); ctx.closePath(); ctx.fill();
+      // dispense chute flash
+      const disp = ctrl.out.dispense[k];
+      ctx.strokeStyle = disp?st.color:"rgba(255,255,255,.10)"; ctx.lineWidth=disp?4:2;
+      ctx.beginPath(); ctx.moveTo(sx,by-74); ctx.lineTo(sx,by-beltH/2-4); ctx.stroke();
+      // label
+      ctx.fillStyle=C.muted; ctx.font="600 10px "+MONO; ctx.textAlign="center";
+      ctx.fillText(st.name, sx, by-124);
+      // gate (bar just downstream of the sense point)
+      const gx=sx+34, open=ctrl.out.gate[k] && !(k===1&&world.jamChoc);
+      ctx.strokeStyle = (k===1&&world.jamChoc)?C.crit:(open?C.faint:C.warn); ctx.lineWidth=3;
+      ctx.beginPath();
+      if (open){ ctx.moveTo(gx,by-beltH/2-2); ctx.lineTo(gx,by-beltH/2-16); }   // raised
+      else { ctx.moveTo(gx,by-beltH/2-2); ctx.lineTo(gx,by+beltH/2-6); }        // lowered/blocking
+      ctx.stroke();
+      // sensor dot + beam
+      const active = liveInputs && liveInputs.sense[k];
+      ctx.fillStyle = active?C.good:"rgba(255,255,255,.14)";
+      ctx.beginPath(); ctx.arc(sx, by+beltH/2+16, 4.5, 0, 7); ctx.fill();
+      if (active){ ctx.strokeStyle="rgba(87,192,138,.5)"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(sx,by+beltH/2+11); ctx.lineTo(sx,by+2); ctx.stroke(); }
+      if (k===2 && world.blindMarsh){ ctx.fillStyle=C.crit; ctx.font="600 9px "+MONO; ctx.fillText("BLIND", sx, by+beltH/2+34); }
+    }
+
+    // tunnel
+    const tx0=X(TUNNEL.entry), tx1=X(TUNNEL.exit);
+    ctx.strokeStyle=C.hair; ctx.lineWidth=1.5;
+    roundRect(tx0-6, by-108, (tx1-tx0)+30, 150, 10);
+    ctx.fillStyle= world.heaterOn?"rgba(255,106,44,.10)":"rgba(255,255,255,.02)"; ctx.fill(); ctx.stroke();
+    ctx.fillStyle=world.heaterOn?C.ember:C.muted; ctx.font="600 10px "+MONO; ctx.textAlign="center";
+    ctx.fillText("HEATING TUNNEL", (tx0+tx1)/2, by-114);
+    // heater coils
+    ctx.strokeStyle=world.heaterOn?C.ember:"rgba(255,255,255,.12)"; ctx.lineWidth=2;
+    for(let i=0;i<3;i++){ const yy=by-92+i*8; ctx.beginPath(); for(let x=tx0+4;x<tx1+18;x+=9){ ctx.lineTo(x, yy+(x%18<9?0:3)); } ctx.stroke(); }
+    // temp readout
+    ctx.fillStyle=world.heaterOn?C.ember:C.muted; ctx.font="700 13px "+MONO;
+    ctx.fillText(Math.round(world.temp)+"°C", (tx0+tx1)/2, by+34);
+    // tunnel entry/exit sensor dots
+    for (const [p,on] of [[TUNNEL.entry, liveInputs&&liveInputs.tunnel_entry],[TUNNEL.exit, liveInputs&&liveInputs.tunnel_exit]]){
+      ctx.fillStyle=on?C.good:"rgba(255,255,255,.14)"; ctx.beginPath(); ctx.arc(X(p),by+beltH/2+16,4.5,0,7); ctx.fill();
+    }
+
+    // ghost estimates (controller belief)
+    for (const tr of ctrl.tracks){
+      if (tr.status==="done"||tr.status==="lost") continue;
+      const gx=X(tr.estPos);
+      ctx.save(); ctx.setLineDash([5,4]); ctx.strokeStyle=C.teal; ctx.lineWidth=1.5;
+      roundRect(gx-TRAY_W/2, by-beltH/2-24, TRAY_W, beltH+22, 5); ctx.stroke(); ctx.restore();
+    }
+
+    // actual trays with ingredient stacks
+    for (const tr of world.trays){
+      drawTray(tr, X(tr.pos), by);
+    }
+
+    // baseline scale ticks
+    ctx.fillStyle=C.faint; ctx.font="9px "+MONO; ctx.textAlign="center";
+    for (let mm=0; mm<=BELT_LEN; mm+=300){ ctx.fillRect(X(mm),by+beltH/2+2,1,4); ctx.fillText(mm+"mm", X(mm), by+beltH/2+48); }
+  }
+
+  function drawTray(tr, cx, by){
+    const topY=by-beltH/2;
+    // tray platform
+    ctx.fillStyle= tr._blocked? "#3a2f24" : "#33291f";
+    roundRect(cx-TRAY_W/2, topY-6, TRAY_W, 12, 3); ctx.fill();
+    ctx.strokeStyle="rgba(255,255,255,.08)"; ctx.lineWidth=1; ctx.stroke();
+    // stacked ingredients
+    let y=topY-6;
+    const layer=(h,color,inset)=>{ y-=h; ctx.fillStyle=color; roundRect(cx-TRAY_W/2+inset, y, TRAY_W-2*inset, h, 2); ctx.fill();
+      ctx.strokeStyle="rgba(0,0,0,.22)"; ctx.lineWidth=.5; ctx.stroke(); };
+    // rendered from ACTUAL contents: a failed dispense leaves a gap, a double stacks twice
+    for (let i=0;i<tr.counts.g;i++) layer(9, C.graham, 4);
+    for (let i=0;i<tr.counts.c;i++) layer(7, C.choc, 6);
+    for (let i=0;i<tr.counts.m;i++) layer(11, lerpColor(C.marsh, C.toast, tr.toast||0), 5);
+    // id tag
+    ctx.fillStyle=C.muted; ctx.font="600 9px "+MONO; ctx.textAlign="center";
+    ctx.fillText("#"+tr.id, cx, topY-6+11);
+  }
+
+  function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  const MONO = 'ui-monospace,"SF Mono",Menlo,Consolas,monospace';
+  function lerpColor(a,b,t){ const pa=hx(a),pb=hx(b); return `rgb(${Math.round(pa[0]+(pb[0]-pa[0])*t)},${Math.round(pa[1]+(pb[1]-pa[1])*t)},${Math.round(pa[2]+(pb[2]-pa[2])*t)})`; }
+  function hx(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+
+  // ---- timeline (signal history, AdvantageScope-style) — target-switchable ----
+  let tlx, TW=900, TH=214;
+  const TLT={};
+  function mkTL(id, aspect){ const el=document.getElementById(id); return el?{el,ctx:el.getContext("2d"),tw:900,th:214,aspect}:null; }
+  function fitTLT(t){ if(!t)return; const w=t.el.clientWidth||900; const d=Math.min(2,window.devicePixelRatio||1);
+    t.tw=w; t.th=t.aspect?Math.max(160,Math.round(w*t.aspect)):214; t.el.width=Math.round(t.tw*d); t.el.height=Math.round(t.th*d); t.ctx.setTransform(d,0,0,d,0,0); }
+  function setTL(t){ tlx=t.ctx; TW=t.tw; TH=t.th; }
+  function rgba(hex,a){ const p=hx(hex); return `rgba(${p[0]},${p[1]},${p[2]},${a})`; }
+  // gates shown as CLOSED=high (the informative pulse); sensors/heater raw.
+  const TL_LANES=[
+    {l:"sense·G", g:s=>s.s[0],  c:C.good }, {l:"sense·C", g:s=>s.s[1],  c:C.good }, {l:"sense·M", g:s=>s.s[2], c:C.good},
+    {l:"tun·in",  g:s=>s.te,    c:C.good }, {l:"tun·out", g:s=>s.tx,    c:C.good },
+    {l:"gate·G ↓",g:s=>!s.g[0], c:C.teal }, {l:"gate·C ↓",g:s=>!s.g[1], c:C.teal }, {l:"gate·M ↓",g:s=>!s.g[2],c:C.teal},
+    {l:"heater",  g:s=>s.h,     c:C.ember}
+  ];
+  function drawTimeline(history){
+    tlx.clearRect(0,0,TW,TH);
+    const LG=68, RG=10, top=6;
+    if (!history || !history.length){ tlx.fillStyle=C.faint; tlx.font="11px "+MONO; tlx.textAlign="left"; tlx.fillText("press Run — signals trace here", LG, TH/2); return; }
+    const t0=history[0].t, t1=Math.max(sim.t, t0+0.5);
+    const xFor=t=>LG + (t-t0)/(t1-t0)*(TW-LG-RG);
+    // time gridlines + labels
+    const span=t1-t0, gstep = span>40?10:(span>16?5:(span>6?2:1));
+    tlx.font="9px "+MONO; tlx.lineWidth=1;
+    for (let tt=Math.ceil(t0/gstep)*gstep; tt<=t1+1e-3; tt+=gstep){ const x=xFor(tt);
+      tlx.strokeStyle=rgba(C.faint,.22); tlx.beginPath(); tlx.moveTo(x,top); tlx.lineTo(x,TH-12); tlx.stroke();
+      tlx.fillStyle=C.faint; tlx.textAlign="center"; tlx.fillText(tt.toFixed(0)+"s", x, TH-2); }
+    // analog strip: belt (0-130) + temp (0-220)
+    const AH=40, AY=top;
+    tlx.strokeStyle=rgba(C.faint,.35); tlx.strokeRect(LG,AY,TW-LG-RG,AH);
+    tlx.textAlign="right"; tlx.fillStyle=C.teal; tlx.fillText("belt",LG-6,AY+13); tlx.fillStyle=C.ember; tlx.fillText("temp",LG-6,AY+27);
+    const trace=(get,max,col)=>{ tlx.strokeStyle=col; tlx.lineWidth=1.4; tlx.beginPath();
+      for(let i=0;i<history.length;i++){ const s=history[i]; const x=xFor(s.t); const y=AY+AH-2-(Math.min(max,get(s))/max)*(AH-4); i?tlx.lineTo(x,y):tlx.moveTo(x,y);} tlx.stroke(); };
+    trace(s=>s.belt,130,C.teal); trace(s=>s.temp,220,C.ember);
+    // digital lanes (run-length bands)
+    const rows=TL_LANES.length+1, DY=AY+AH+9, laneH=Math.max(11,(TH-DY-14)/rows);
+    const band=(idx,label,get,col)=>{ const y=DY+idx*laneH;
+      tlx.fillStyle=C.muted; tlx.font="9px "+MONO; tlx.textAlign="right"; tlx.fillText(label,LG-6,y+laneH*0.7);
+      tlx.strokeStyle=rgba(C.faint,.16); tlx.lineWidth=1; tlx.beginPath(); tlx.moveTo(LG,y+laneH-1); tlx.lineTo(TW-RG,y+laneH-1); tlx.stroke();
+      tlx.fillStyle=rgba(col,.5); let rs=null;
+      for(let i=0;i<history.length;i++){ const v=get(history[i]);
+        if(v&&rs===null) rs=history[i].t;
+        if(rs!==null&&(!v||i===history.length-1)){ tlx.fillRect(xFor(rs), y+2, Math.max(1.2,xFor(history[i].t)-xFor(rs)), laneH-4); rs=null; } }
+    };
+    TL_LANES.forEach((L,i)=>band(i,L.l,L.g,L.c));
+    // dispense pulses, colored per station
+    const dy=DY+TL_LANES.length*laneH;
+    tlx.fillStyle=C.muted; tlx.textAlign="right"; tlx.font="9px "+MONO; tlx.fillText("dispense",LG-6,dy+laneH*0.7);
+    tlx.strokeStyle=rgba(C.faint,.16); tlx.beginPath(); tlx.moveTo(LG,dy+laneH-1); tlx.lineTo(TW-RG,dy+laneH-1); tlx.stroke();
+    for(let i=1;i<history.length;i++) for(let k=0;k<3;k++){ if(history[i].d[k]&&!history[i-1].d[k]){ tlx.strokeStyle=STATIONS[k].color; tlx.lineWidth=2.5; const x=xFor(history[i].t); tlx.beginPath(); tlx.moveTo(x,dy+3); tlx.lineTo(x,dy+laneH-2); tlx.stroke(); } }
+    // now cursor
+    tlx.strokeStyle=C.teal; tlx.lineWidth=1; tlx.beginPath(); tlx.moveTo(xFor(t1),top); tlx.lineTo(xFor(t1),TH-12); tlx.stroke();
+  }
+
+  // ---- inspector / DOM render ----
+  const $=id=>document.getElementById(id);
+
+  function renderAll(){ viewMode==="compare" ? renderCompare() : renderSingle(); }
+
+  function updateTopbar(e){
+    $("tickVal").textContent = sim.tick;
+    $("clockVal").textContent = sim.t.toFixed(1)+"s";
+    $("beltVal").textContent = Math.round(e.ctrl.out.belt);
+    $("trayCountVal").textContent = e.ctrl.tracks.filter(t=>t.status!=="done"&&t.status!=="lost").length;
+    $("doneVal").textContent = e.ctrl.tracks.filter(t=>t.status==="done").length;
+    const lost = engines.some(x=>x.ctrl.tracks.some(t=>t.status==="lost"));
+    const pill=$("statePill"), txt=$("stateText");
+    if (lost){ pill.className="pill fault"; txt.textContent="FAULT"; }
+    else if (sim.playing){ pill.className="pill run"; txt.textContent="RUNNING"; }
+    else { pill.className="pill stop"; txt.textContent="PAUSED"; }
+  }
+
+  function renderSingle(){
+    const e=engines[0]; activate(e); liveInputs=senseInputs(e.world);
+    setCanvas(TGT.main); drawLine(); setTL(TLT.single); drawTimeline(e.hist);
+    updateTopbar(e);
+    setIO("in-s0",liveInputs.sense[0]); setIO("in-s1",liveInputs.sense[1]); setIO("in-s2",liveInputs.sense[2]);
+    setIO("in-te",liveInputs.tunnel_entry); setIO("in-tx",liveInputs.tunnel_exit);
+    $("in-temp").textContent=Math.round(liveInputs.tunnel_temp)+"°"; $("in-temp").className="val"+(e.world.heaterOn?" hot":"");
+    $("out-belt").textContent=Math.round(e.ctrl.out.belt);
+    for (let k=0;k<3;k++){ const el=$("out-g"+k); const jam=(k===1&&e.world.jamChoc); el.textContent=jam?"JAM":(e.ctrl.out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(e.ctrl.out.gate[k]?"":" off")); }
+    const disp = e.ctrl.out.dispense.map((d,i)=>d?STATIONS[i].key:null).filter(Boolean);
+    $("out-disp").textContent = disp.length?disp.join(","):"—"; $("out-disp").className="val"+(disp.length?" on":" off");
+    $("out-heat").textContent = e.ctrl.out.heater?"ON":"off"; $("out-heat").className="val"+(e.ctrl.out.heater?" hot":" off");
+    drawTrays(); drawLog(e.log, "log");
+  }
+
+  function renderCompare(){
+    updateTopbar(engines[0]);
+    for (let i=0;i<engines.length;i++){
+      const e=engines[i]; activate(e); liveInputs=senseInputs(e.world);
+      setCanvas(i===0?TGT.A:TGT.B); drawLine();
+      setTL(i===0?TLT.A:TLT.B); drawTimeline(e.hist);
+      drawLog(e.log, "lane"+i+"-log");
+      $("lane"+i+"-name").textContent = CONTROLLERS[e.mode].name;
+      $("lane"+i+"-good").textContent = e.good;
+      $("lane"+i+"-bad").textContent  = e.bad;
+      const lost=e.ctrl.tracks.some(t=>t.status==="lost");
+      const st=$("lane"+i+"-state");
+      if (lost){ st.className="pill fault"; st.textContent="FAULT"; }
+      else if (sim.playing){ st.className="pill run"; st.textContent="RUNNING"; }
+      else { st.className="pill stop"; st.textContent="PAUSED"; }
+    }
+  }
+  function setIO(id,on){ const el=$(id); el.textContent=on?"1":"0"; el.className="val"+(on?" on":" off"); }
+
+  function drawTrays(){
+    const rows=$("trayRows");
+    const list = ctrl.tracks;
+    if (!list.length){ rows.innerHTML='<tr><td colspan="5" style="color:var(--muted-2)">no trays — press “Inject tray”</td></tr>'; return; }
+    const KEY=["g","c","m"];
+    const dot=(t,wt,i)=>{
+      const attempted = t.stage>i;
+      const act = wt ? wt.counts[KEY[i]] : (attempted?Math.max(1,t.placed[i]):0);
+      let col="#4a4139";
+      if (attempted) col = act===0 ? "#e2493a" : (act===1 ? "#57c08a" : "#f0c24a");
+      const lbl = act>=2 ? act : "";
+      return `<span title="${KEY[i]}: believed ${t.placed[i]}, actual ${wt?act:"?"}" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;border-radius:2px;background:${col};color:#17130f;font-size:8px;font-weight:700;margin-right:2px">${lbl}</span>`;
+    };
+    rows.innerHTML = list.map(t=>{
+      const wt=nearestWorld(world, t.estPos);
+      const drift = wt ? (t.estPos-wt.pos) : null;
+      const dcls = drift!=null && Math.abs(drift)>40?"drift-crit":(drift!=null&&Math.abs(drift)>18?"drift-hi":"");
+      const stat={moving:"moving",held:"held",toasting:"toast",done:"done",lost:"lost"}[t.status]||t.status;
+      return `<tr>
+        <td>#${t.id}</td>
+        <td style="white-space:nowrap">${dot(t,wt,0)}${dot(t,wt,1)}${dot(t,wt,2)}</td>
+        <td class="num">${t.estPos.toFixed(0)}</td>
+        <td class="num ${dcls}">${drift!=null?(drift>=0?"+":"")+drift.toFixed(0):"—"}</td>
+        <td><span class="tag ${t.status==="toasting"?"toast":t.status}">${stat}</span></td>
+      </tr>`;
+    }).join("");
+  }
+
+  // ---- decision log (per lane; log() routes to the active lane's array) ----
+  function log(tms, msg, kind){ activeLog.push({t:(tms/1000).toFixed(2), m:msg, k:kind||""}); if(activeLog.length>200) activeLog.shift(); }
+  function drawLog(logArr, elId){
+    const el=$(elId); if(!el) return;
+    el.innerHTML = logArr.slice(-60).map(l=>`<div class="line"><span class="t">${l.t}s</span><span class="m ${l.k}">${l.m}</span></div>`).join("");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // =================== LOOP ===================
+  let last=0;
+  function frame(ts){
+    if(!last) last=ts; let dt=(ts-last)/1000; last=ts; if(dt>0.1) dt=0.1;
+    if (sim.playing){ advance(dt); const anyBelt=engines.some(e=>e.ctrl.out.belt>0); beltPhase += anyBelt? (reduceMotion?0:80*dt*sim.speed):0; }
+    renderAll();
+    requestAnimationFrame(frame);
+  }
+
+  // =================== CONTROLS ===================
+  const applyAll = fn => engines.forEach(e=>fn(e.world));
+  $("playBtn").addEventListener("click", ()=>{ sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
+  $("stepBtn").addEventListener("click", ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run"; stepOnce(); });
+  $("resetBtn").addEventListener("click", ()=>{ reset(); injectTray(); $("playBtn").innerHTML="▶ Run";
+    ["failGBtn","dblCBtn","blindBtn","jamBtn"].forEach(id=>$(id).setAttribute("aria-pressed","false"));
+    log(0,"reset","") ; renderAll(); });
+  $("injectBtn").addEventListener("click", ()=>{ injectTray(); log(sim.t*1000,"operator injected a tray at belt entry",""); });
+  $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
+  $("failGBtn").addEventListener("click", e=>{ const on=engines[0].world.disp.graham!=="fail"; applyAll(w=>w.disp.graham=on?"fail":"ok"); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"graham dispenser "+(on?"set to FAIL (places 0)":"restored"),"warn"); });
+  $("dblCBtn").addEventListener("click", e=>{ const on=engines[0].world.disp.choc!=="double"; applyAll(w=>w.disp.choc=on?"double":"ok"); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate dispenser "+(on?"set to DOUBLE (places 2)":"restored"),"warn"); });
+  $("blindBtn").addEventListener("click", e=>{ const on=!engines[0].world.blindMarsh; applyAll(w=>w.blindMarsh=on); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"marshmallow sensor "+(on?"BLINDED — controller must dead-reckon":"restored"),"warn"); });
+  $("jamBtn").addEventListener("click", e=>{ const on=!engines[0].world.jamChoc; applyAll(w=>w.jamChoc=on); e.currentTarget.setAttribute("aria-pressed",on); log(sim.t*1000,"chocolate gate "+(on?"JAMMED shut":"freed"),"warn"); });
+  function selectCtrl(mode){
+    modeA=mode; $("playBtn").innerHTML="▶ Run";
+    $("ctrlOpen").classList.toggle("ctrl-active", mode==="open");
+    $("ctrlClosed").classList.toggle("ctrl-active", mode==="closed");
+    reset(); injectTray(); log(0, "controller = "+CONTROLLERS[mode].name+" ("+CONTROLLERS[mode].blurb+")", ""); renderAll();
+  }
+  $("ctrlOpen").addEventListener("click", ()=>selectCtrl("open"));
+  $("ctrlClosed").addEventListener("click", ()=>selectCtrl("closed"));
+  function setView(mode){
+    viewMode=mode; APP.dataset.view=mode; $("playBtn").innerHTML="▶ Run";
+    $("viewSingle").classList.toggle("ctrl-active", mode==="single");
+    $("viewCompare").classList.toggle("ctrl-active", mode==="compare");
+    fitAll(); reset(); injectTray(); renderAll();
+  }
+  $("viewSingle").addEventListener("click", ()=>setView("single"));
+  $("viewCompare").addEventListener("click", ()=>setView("compare"));
+  window.addEventListener("resize", ()=>{ fitAll(); renderAll(); });
+
+  // ---- boot ----
+  const APP=document.querySelector(".app"); APP.dataset.view="single";
+  TGT.main=mkTarget("line",0.40); TGT.A=mkTarget("laneA",0.52); TGT.B=mkTarget("laneB",0.52);
+  TLT.single=mkTL("tl",0); TLT.A=mkTL("laneA-tl",0.34); TLT.B=mkTL("laneB-tl",0.34);
+  (async function boot(){
+    try { await loadWasm(); }                       // fetch + compile controller.wasm once
+    catch (err){ document.getElementById("wasmErr").style.display="block"; console.error("controller.wasm load failed:", err); return; }
+    fitAll(); reset(); injectTray();                // reset() builds per-lane wasm instances
+    log(0,"controller.wasm loaded — "+CONTROLLERS[modeA].name+" · press Run","");
+    renderAll();
+    requestAnimationFrame(frame);
+  })();
+})();
+</script>
+</body>
+</html>

@@ -6,6 +6,12 @@
 #include "smores/StructHal.h"
 using namespace smores;
 
+// Imported from the host (JS): the controller's decision log crosses the
+// boundary here. kind/msg are pointers into wasm memory (null-terminated UTF-8).
+extern "C" __attribute__((import_module("env"), import_name("host_log")))
+void host_log(const char* kind, const char* msg);
+static void wasm_log(const char* kind, const char* msg) { host_log(kind, msg); }
+
 static Inputs   g_in;
 static Outputs  g_out;
 static StructHal g_hal(&g_in, &g_out);
@@ -20,7 +26,7 @@ __attribute__((export_name("outputs_ptr"))) Outputs* outputs_ptr() { return &g_o
 // mode: 0 = open-loop, 1 = closed-loop.
 __attribute__((export_name("init"))) void init(int mode) {
     delete g_ctrl;
-    g_ctrl = new Controller(g_hal, mode ? ClosedLoop : OpenLoop);
+    g_ctrl = new Controller(g_hal, mode ? ClosedLoop : OpenLoop, Config(), wasm_log);
 }
 __attribute__((export_name("tick"))) void tick() { if (g_ctrl) g_ctrl->update(); }
 

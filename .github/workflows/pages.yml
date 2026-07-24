@@ -1,0 +1,45 @@
+# Deploy the s'mores-line visualizer to GitHub Pages.
+#
+# The page runs the REAL controller: controller/src/Controller.cpp is compiled to
+# controller.wasm here (not committed — see .gitignore) so the deployed binary
+# always matches source, then docs/app/ is published as the site root.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Allow GITHUB_TOKEN to deploy to Pages, and let one deploy finish before the next.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch wasi-sdk (GitHub runners have no TLS proxy)
+        run: ./tools/get-wasi-sdk.sh
+      - name: Build controller.wasm + assemble the app
+        run: make app
+      - name: Sanity-check the WASM<->JS boundary before publishing
+        run: make -C controller integration
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/app
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

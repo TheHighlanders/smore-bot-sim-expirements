@@ -7,7 +7,7 @@ INCLUDES  = -Ishared -Ilib/P1AM_Sim
 
 WASI_SDK_DIR := .toolchains/wasi-sdk
 
-.PHONY: host-test chip chip-local test controller-test clean
+.PHONY: host-test chip chip-local test controller-test app serve clean
 
 ## host-test: build+run the dependency-free host smoke test (needs only g++)
 host-test:
@@ -40,6 +40,21 @@ test:
 controller-test:
 	$(MAKE) -C controller host-test
 
+## app: assemble the GitHub Pages app — build the controller to WASM and copy it
+## next to docs/app/index.html. The .wasm is a build artifact (gitignored); run
+## this after a clone (or let CI do it) before serving. Needs the repo-local
+## wasi-sdk (see `make chip-local` / tools/get-wasi-sdk.sh).
+app:
+	$(MAKE) -C controller wasm
+	cp controller/build/controller.wasm docs/app/controller.wasm
+	@echo "app assembled -> docs/app/  (run 'make serve' to view)"
+
+## serve: assemble + serve docs/app over http (fetch() of the .wasm needs http,
+## not file://). Open http://localhost:8000/ .
+serve: app
+	cd docs/app && python3 -m http.server 8000
+
 clean:
 	rm -rf build
+	rm -f docs/app/controller.wasm
 	$(MAKE) -C wokwi/chips/p1-base-controller clean

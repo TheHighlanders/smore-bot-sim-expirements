@@ -1575,6 +1575,9 @@ void tick() {
   TLT.single=mkTL("tl",0); TLT.A=mkTL("laneA-tl",0.34); TLT.B=mkTL("laneB-tl",0.34);
   $("layoutSel").innerHTML = LAYOUT_CHOICES.map(l=>`<option value="${l.name}">${l.title}</option>`).join("");
   $("layoutSel").value = currentLayout;
+  // Cache the big in-browser C++ toolchain (+ app shell) in local storage so it
+  // downloads once and works offline afterward (see sw.js).
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(e=>console.warn("SW registration failed:", e));
   (async function boot(){
     try { await loadLayout(currentLayout); }        // fetch layout meta + compile its controller.wasm
     catch (err){ document.getElementById("wasmErr").style.display="block"; console.error("layout load failed:", err); return; }

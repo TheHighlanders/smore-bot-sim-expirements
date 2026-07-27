@@ -250,15 +250,20 @@
         <button class="lang-tab active" data-lang="js">JavaScript</button>
         <button class="lang-tab" data-lang="python">Python</button>
         <button class="lang-tab" data-lang="cpp">C++</button>
+        <button class="lang-tab" data-file="layout" title="The machine: topology + hardware wiring. Validated live; Apply regenerates the contract.">layout.json</button>
+        <button class="lang-tab" data-file="hal" title="The HAL and its implementations — where slots and channels live">HAL ▾</button>
       </div>
+      <select id="halPick" class="btn" style="display:none;padding:6px 8px;font-size:11px"></select>
       <span class="studio-note" id="studioLang">write a controller for the <b id="studioLayoutName">…</b> layout</span>
       <span class="spacer"></span>
       <button class="btn" id="dbgBtn" title="Debug: step through your controller's decision for one control cycle, line by line">🐞 Debug</button>
       <button class="btn" id="dbgStepLine" title="Step one source line" disabled>⤓ Line</button>
       <button class="btn" id="dbgStepTick" title="Finish this cycle (advance the line one tick)" disabled>⏭ Tick</button>
       <button class="btn" id="dbgStop" title="Stop debugging" disabled>■ Stop</button>
+      <button class="btn" id="applyBtn" style="display:none" title="Validate this layout and regenerate the contract from it">✔ Apply layout</button>
+      <button class="btn" id="exportBtn" style="display:none" title="Download layout.json so it can be committed next to your controller">⭳ Export</button>
       <button class="btn" id="checkBtn" title="Validate this controller against the active layout (the runtime equivalent of the C++ compile-time check)">✓ Check vs layout</button>
-      <button class="btn" id="revertBtn" title="Restore the starter controller">↺ Revert</button>
+      <button class="btn" id="revertBtn" title="Restore the starter file">↺ Revert</button>
     </div>
     <div id="editor"></div>
     <div class="studio-status" id="studioStatus">Monaco loading…</div>
@@ -288,7 +293,8 @@ function tick(io, mem) {
     if (rise) {
       let t = nearest(mem.tracks, d.pos);
       if (!t && d.index === 0) { t = { id: mem.tracks.length + 1, estPos: d.pos, stage: 0, status: "moving", hold: -1, placed: io.dispensers.map(() => 0) }; mem.tracks.push(t); io.log("tray #" + t.id + " detected", "evt"); }
-      if (t) { t.estPos = d.pos; if (t.stage === d.stage) { t.status = "held"; t.hold = d.index; t.until = io.nowMs + 650; } }
+      if (t) { io.watch("drift_mm", d.pos - t.estPos);   // dead-reckoning error, corrected here
+               t.estPos = d.pos; if (t.stage === d.stage) { t.status = "held"; t.hold = d.index; t.until = io.nowMs + 650; } }
     }
     mem.lastSense[d.index] = io.sense(d.index);
   }
@@ -343,6 +349,7 @@ def tick(io, mem):
                      "status": "moving", "hold": -1, "placed": [0] * len(io.dispensers)}
                 mem["tracks"].append(t); io.log("tray #%d detected" % t["id"], "evt")
             if t:
+                io.watch("drift_mm", d.pos - t["estPos"])   # dead-reckoning error
                 t["estPos"] = d.pos
                 if t["stage"] == d.stage:
                     t["status"] = "held"; t["hold"] = d.index; t["until"] = io.nowMs + 650
@@ -379,6 +386,7 @@ def tick(io, mem):
 // file line by line. Freestanding (no std::), so it links against just libc.
 #include "Contract.h"        // generated from the active layout (pulls in Layout.h)
 #include "State.h"           // generated: enum Status + struct Track  <- your state
+#include "Watch.h"           // WATCH(name, value) -> the Watch panel + debugger
 using namespace smores;
 
 extern "C" __attribute__((import_module("env"), import_name("host_log")))
@@ -427,7 +435,10 @@ void tick() {
             Track* t = nearest(layout::DISP[k].pos_mm);
             if (!t && k == 0 && g_n < 8) { Track& nt = g_tr[g_n++]; nt = Track(); nt.id = g_n;
                 nt.est_pos_mm = layout::DISP[0].pos_mm; t = &nt; }
-            if (t) { t->est_pos_mm = layout::DISP[k].pos_mm;
+            // publish the dead-reckoning error this sensor just corrected — a local,
+            // so only WATCH can show it (see the Watch panel / debugger)
+            if (t) { WATCH("drift_mm", layout::DISP[k].pos_mm - t->est_pos_mm);
+                     t->est_pos_mm = layout::DISP[k].pos_mm;
                 if (t->stage == layout::DISP[k].stage) { t->status = Held; t->hold = k; t->phase_until = now + 650; } }
         }
         g_last[k] = g_in.sense[k];
@@ -616,6 +627,7 @@ void tick() {
   const E_TARGET = 420;           // heat units a marshmallow must accumulate to toast
 
   let currentLayout = LAYOUT_CHOICES[0].name;   // which layout is loaded
+  let LAYOUT_JSON_TEXT = "{}";                  // raw source of the active layout
   const _wasmCache = {};                        // name -> compiled WebAssembly.Module
   async function loadLayout(name){
     // `no-cache` = always revalidate. The meta and the .wasm are a matched pair
@@ -624,7 +636,17 @@ void tick() {
     // provides the offline fallback.
     const meta = await (await fetch(`./layouts/${name}.layout.json`, {cache:"no-cache"})).json();
     if (!_wasmCache[name]) _wasmCache[name] = await WebAssembly.compile(await (await fetch(`./wasm/${name}.wasm`, {cache:"no-cache"})).arrayBuffer());
-    LAYOUT = meta; LAYOUT.module = _wasmCache[name];
+    applyMeta(meta, _wasmCache[name], name);
+    // the ORIGINAL layout.json, so the Studio can show + edit the real source
+    try { LAYOUT_JSON_TEXT = await (await fetch(`./layouts/${name}.src.json`, {cache:"no-cache"})).text(); }
+    catch(e){ LAYOUT_JSON_TEXT = "{}"; }
+    if (STUDIO.models && STUDIO.models.layout) STUDIO.models.layout.setValue(LAYOUT_JSON_TEXT);
+  }
+  // Install a layout meta (fetched, or generated in-browser from an edited
+  // layout.json) as the active machine. Everything downstream — geometry, I/O
+  // marshalling, rendering, faults — is rebuilt from it.
+  function applyMeta(meta, wasmModule, name){
+    LAYOUT = meta; LAYOUT.module = wasmModule;
     N_DISP = meta.dispensers.length;
     STATIONS = meta.dispensers.map(d => ({
       id:d.id, key:d.id, name:(d.ingredient||d.id).toUpperCase()+(d.role==="cap"?" · CAP":""),
@@ -1229,6 +1251,86 @@ void tick() {
   const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min";
   function studioStatus(msg, cls){ const el=$("studioStatus"); if(!el)return; el.textContent=msg; el.className="studio-status"+(cls?" "+cls:""); }
 
+  // ---- P4: the project tree (HAL.md §H-9) --------------------------------------
+  // The Studio is a small project, not one buffer: the machine (layout.json), the
+  // controller you write, and the HAL layer where slots/channels live. HAL files
+  // are editable on purpose — a mismatch between the sim wiring and the real wiring
+  // should be visible in the same place (UI-5).
+  const HAL_FILES = [
+    { key:"Hal.h",         path:"./src/smores/Hal.h",         lang:"cpp", ro:false, note:"THE HAL — the subsystem interfaces the controller talks to" },
+    { key:"Machine.h",     path:"./src/smores/Machine.h",     lang:"cpp", ro:false, note:"the composition root handed to the controller" },
+    { key:"SimMachine.h",  path:"./src/smores/SimMachine.h",  lang:"cpp", ro:false, note:"HAL impl for the browser — backed by the contract structs" },
+    { key:"P1amMachine.h", path:"./src/smores/P1amMachine.h", lang:"cpp", ro:false, note:"HAL impl for REAL hardware — this is where P1.writeDiscrete lives" },
+    { key:"Watch.h",       path:"./src/smores/Watch.h",        lang:"cpp", ro:false, note:"WATCH(name,value) telemetry" },
+    { key:"Controller.cpp",path:"./src/Controller.cpp",        lang:"cpp", ro:false, note:"the shipped reference controller (portable: sim + hardware)" },
+    { key:"Layout.h",      path:"GEN:Layout.h",                lang:"cpp", ro:true,  note:"GENERATED from layout.json — edit the layout instead" },
+    { key:"Contract.h",    path:"GEN:Contract.h",              lang:"cpp", ro:true,  note:"GENERATED from layout.json" },
+    { key:"State.h",       path:"GEN:State.h",                 lang:"cpp", ro:true,  note:"GENERATED from layout.json" },
+  ];
+  let CODEGEN = null, MODULE_CATALOG = null;
+  // One validator for the build and the browser (UI-3): this is literally the
+  // module codegen runs, so an error here is an error there.
+  async function loadCodegen(){
+    if (CODEGEN) return CODEGEN;
+    const [cg, mods, dbText] = await Promise.all([
+      import("./tools/codegen.mjs"),
+      import("./tools/modules.mjs"),
+      (await fetch("./src/module_db.h", {cache:"no-cache"})).text(),
+    ]);
+    MODULE_CATALOG = mods.parseModuleDb(dbText);
+    CODEGEN = cg;
+    return CODEGEN;
+  }
+  // Validate the layout buffer. Returns {ok, errors[], L, B}.
+  async function validateLayoutText(text){
+    const cg = await loadCodegen();
+    let raw; try { raw = JSON.parse(text); } catch(e){ return { ok:false, errors:["JSON syntax: "+e.message] }; }
+    let L;   try { L = cg.parseLayout(raw); } catch(e){ return { ok:false, errors:[e.message] }; }
+    const B = cg.validateBinding(L, MODULE_CATALOG);
+    return { ok: B.errors.length === 0, errors: B.errors, L, B };
+  }
+  let _valTimer = null;
+  function scheduleLayoutValidate(){
+    clearTimeout(_valTimer);
+    _valTimer = setTimeout(async()=>{
+      if (STUDIO.file !== "layout" || !STUDIO.editor) return;
+      const model = STUDIO.models.layout;
+      const r = await validateLayoutText(model.getValue());
+      // inline markers, so the error is on the line it belongs to where we can tell
+      const markers = r.errors.map(msg => {
+        const m = /"([A-Za-z_][A-Za-z0-9_]*)"/.exec(msg);
+        let line = 1;
+        if (m){ const idx = model.getValue().indexOf(`"${m[1]}"`); if (idx >= 0) line = model.getPositionAt(idx).lineNumber; }
+        return { severity: monaco.MarkerSeverity.Error, message: msg, startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 200 };
+      });
+      monaco.editor.setModelMarkers(model, "layout", markers);
+      studioStatus(r.ok
+        ? `✓ layout valid — ${r.L.dispensers.length} dispenser(s)${r.L.hasTunnel?" + tunnel":""}, wiring ${r.B.bound?r.B.base.length+" slot(s)":"sim-only"}. Press “Apply layout”.`
+        : `✗ ${r.errors.length} problem(s): ${r.errors[0]}`, r.ok ? "ok" : "err");
+    }, 350);
+  }
+  // Apply an edited layout: regenerate the contract IN THE BROWSER and re-init.
+  // For JS/Python the new meta is enough; for C++ we regenerate the headers and
+  // recompile, which closes the loop entirely client-side.
+  async function applyLayoutEdit(){
+    const r = await validateLayoutText(STUDIO.models.layout.getValue());
+    if (!r.ok){ studioStatus(`✗ not applied — ${r.errors[0]}`, "err"); return false; }
+    const cg = CODEGEN;
+    const meta = cg.meta(r.L, r.B);
+    STUDIO.genHeaders = {
+      "Layout.h":   cg.emitLayoutHeader(r.L),
+      "Contract.h": cg.emitContractHeader(r.L),
+      "State.h":    cg.emitStateHeader(r.L),
+      "Binding.h":  r.B.bound ? cg.emitBindingHeader(r.L, r.B) : cg.emitUnboundBindingHeader(r.L),
+    };
+    applyMeta(meta, LAYOUT.module, r.L.name);   // keeps the current wasm for now
+    for (const k of ["Layout.h","Contract.h","State.h"])
+      if (STUDIO.models[k]) STUDIO.models[k].setValue(STUDIO.genHeaders[k]);
+    studioStatus(`✓ applied “${r.L.name}” — contract regenerated in-browser. ${STUDIO.lang==="cpp" ? "Press ▶ Run to recompile your C++ against it." : "Press ▶ Run."}`, "ok");
+    fitAll();
+    return true;
+  }
+
   async function initMonaco(){
     if (STUDIO.ready) return;
     studioStatus("loading Monaco from CDN…");
@@ -1239,14 +1341,58 @@ void tick() {
     await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=MONACO_BASE+"/vs/loader.js"; s.onload=res; s.onerror=()=>rej(new Error("Monaco loader.js")); document.head.appendChild(s); });
     await new Promise(res=>{ require.config({ paths:{ vs: MONACO_BASE+"/vs" }}); require(["vs/editor/editor.main"], res); });
     for (const lang of ["js","python","cpp"]) STUDIO.models[lang] = monaco.editor.createModel(STARTER(lang), MONACO_LANG[lang]);
-    STUDIO.editor = monaco.editor.create($("editor"), { model:STUDIO.models[STUDIO.lang], theme:"vs-dark", fontSize:12.5, minimap:{enabled:false}, automaticLayout:true, scrollBeyondLastLine:false, padding:{top:10} });
+    // the machine itself, as editable source
+    STUDIO.models.layout = monaco.editor.createModel(LAYOUT_JSON_TEXT, "json");
+    STUDIO.models.layout.onDidChangeContent(()=>scheduleLayoutValidate());
+    // the project tree: HAL + generated files, fetched lazily on first view
+    for (const f of HAL_FILES) STUDIO.models[f.key] = monaco.editor.createModel("// loading " + f.key + " …", f.lang);
+    STUDIO.editor = monaco.editor.create($("editor"), { model:STUDIO.models[STUDIO.lang], theme:"vs-dark", fontSize:12.5, minimap:{enabled:false}, automaticLayout:true, scrollBeyondLastLine:false, padding:{top:10}, glyphMargin:true });
     STUDIO.ready = true;
+    // populate the HAL picker
+    const pick = $("halPick");
+    pick.innerHTML = HAL_FILES.map(f=>`<option value="${f.key}">${f.key}${f.ro?" (generated)":""}</option>`).join("");
+    pick.addEventListener("change", ()=>openHalFile(pick.value));
+    loadHalSources();
     studioStatus("editor ready — write a controller, then “Check vs layout”. (Running & step-debugging: coming next.)");
   }
+  async function loadHalSources(){
+    for (const f of HAL_FILES) {
+      try {
+        let text;
+        if (f.path.startsWith("GEN:")) {
+          const name = f.path.slice(4);
+          text = (STUDIO.genHeaders && STUDIO.genHeaders[name])
+               || await (await fetch(`./layouts/${currentLayout}.${name}`, {cache:"no-cache"})).text();
+        } else {
+          text = await (await fetch(f.path, {cache:"no-cache"})).text();
+        }
+        STUDIO.models[f.key].setValue(text);
+      } catch(e){ STUDIO.models[f.key].setValue("// could not load " + f.key + ": " + e.message); }
+    }
+  }
+  function openHalFile(key){
+    const f = HAL_FILES.find(x=>x.key===key); if(!f) return;
+    STUDIO.file = "hal"; STUDIO.halKey = key;
+    document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.file==="hal"));
+    $("halPick").style.display=""; $("applyBtn").style.display="none"; $("exportBtn").style.display="none";
+    STUDIO.editor.setModel(STUDIO.models[key]);
+    STUDIO.editor.updateOptions({ readOnly: !!f.ro });
+    studioStatus((f.ro?"read-only · ":"editable · ") + f.note, f.ro?"":"ok");
+  }
+  function openLayoutFile(){
+    STUDIO.file = "layout";
+    document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.file==="layout"));
+    $("halPick").style.display="none"; $("applyBtn").style.display=""; $("exportBtn").style.display="";
+    STUDIO.editor.setModel(STUDIO.models.layout);
+    STUDIO.editor.updateOptions({ readOnly:false });
+    scheduleLayoutValidate();
+  }
   function setStudioLang(lang){
-    STUDIO.lang = lang;
+    STUDIO.lang = lang; STUDIO.file = "controller";
     document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.lang===lang));
-    if (STUDIO.editor) STUDIO.editor.setModel(STUDIO.models[lang]);
+    const hp=$("halPick"); if(hp) hp.style.display="none";
+    $("applyBtn").style.display="none"; $("exportBtn").style.display="none";
+    if (STUDIO.editor) { STUDIO.editor.setModel(STUDIO.models[lang]); STUDIO.editor.updateOptions({ readOnly:false }); }
     studioStatus(lang==="cpp" ? "C++ is checked at COMPILE time against the layout-generated contract (strongest bound-pair check)."
                               : "declare `requires` — it's validated against the active layout before the controller runs.");
   }
@@ -1523,11 +1669,16 @@ void tick() {
   }
   async function cppCompile(){
     const api = await loadClang(); _clangLog = "";
-    const [L,C,S] = await Promise.all([
-      (await fetch(`./layouts/${currentLayout}.Layout.h`)).text(),
-      (await fetch(`./layouts/${currentLayout}.Contract.h`)).text(),
-      (await fetch(`./layouts/${currentLayout}.State.h`)).text(),
-    ]);
+    // If the student edited layout.json and pressed Apply, compile against the
+    // headers regenerated in-browser; otherwise use the shipped ones.
+    const G = STUDIO.genHeaders;
+    const [L,C,S] = G
+      ? [G["Layout.h"], G["Contract.h"], G["State.h"]]
+      : await Promise.all([
+          (await fetch(`./layouts/${currentLayout}.Layout.h`, {cache:"no-cache"})).text(),
+          (await fetch(`./layouts/${currentLayout}.Contract.h`, {cache:"no-cache"})).text(),
+          (await fetch(`./layouts/${currentLayout}.State.h`, {cache:"no-cache"})).text(),
+        ]);
     api.memfs.addFile("Layout.h", L); api.memfs.addFile("Contract.h", C); api.memfs.addFile("State.h", S);
     const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(STUDIO.editor.getValue());
     studioStatus("compiling your C++ with clang → WebAssembly (in the browser)…");
@@ -1596,6 +1747,7 @@ void tick() {
   $("speed").addEventListener("input", e=>{ sim.speed=parseFloat(e.target.value); $("speedVal").textContent=sim.speed.toFixed(2).replace(/0$/,"")+"×"; });
   async function switchLayout(name){
     sim && (sim.playing=false); $("playBtn").innerHTML="▶ Run";
+    STUDIO.genHeaders = null;          // a picked layout supersedes an edited one
     try { await loadLayout(name); }
     catch(err){ console.error("layout load failed:", err); document.getElementById("wasmErr").style.display="block"; return; }
     fitAll(); reset(); injectTray(); log(0, `layout → ${LAYOUT.title||name}`, ""); renderAll();
@@ -1626,9 +1778,30 @@ void tick() {
   $("viewSingle").addEventListener("click", ()=>setView("single"));
   $("viewCompare").addEventListener("click", ()=>setView("compare"));
   $("viewStudio").addEventListener("click", ()=>setView("studio"));
-  document.querySelectorAll(".lang-tab").forEach(b=>b.addEventListener("click", ()=>{ if(DBG.on) dbgStop(); setStudioLang(b.dataset.lang); }));
+  document.querySelectorAll(".lang-tab").forEach(b=>b.addEventListener("click", ()=>{
+    if(DBG.on) dbgStop();
+    if (b.dataset.file === "layout")   return openLayoutFile();
+    if (b.dataset.file === "hal")      return openHalFile($("halPick").value || HAL_FILES[0].key);
+    setStudioLang(b.dataset.lang);
+  }));
+  $("applyBtn").addEventListener("click", applyLayoutEdit);
+  $("exportBtn").addEventListener("click", ()=>{
+    const text = STUDIO.models.layout.getValue();
+    let name = "layout.json";
+    try { name = (JSON.parse(text).name || "layout") + ".json"; } catch(e){}
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], {type:"application/json"}));
+    a.download = name; a.click(); URL.revokeObjectURL(a.href);
+    studioStatus(`exported ${name} — commit it next to your controller so the pair travels together`, "ok");
+  });
   $("checkBtn").addEventListener("click", checkVsLayout);
-  $("revertBtn").addEventListener("click", ()=>{ if(DBG.on) dbgStop(); if(STUDIO.editor){ STUDIO.editor.setValue(STARTER(STUDIO.lang)); studioStatus("reverted to the starter controller"); } });
+  $("revertBtn").addEventListener("click", ()=>{
+    if(DBG.on) dbgStop();
+    if(!STUDIO.editor) return;
+    if (STUDIO.file === "layout"){ STUDIO.models.layout.setValue(LAYOUT_JSON_TEXT); studioStatus("reverted layout.json to the shipped layout"); return; }
+    if (STUDIO.file === "hal"){ loadHalSources(); studioStatus("reloaded the HAL sources from the server"); return; }
+    STUDIO.editor.setValue(STARTER(STUDIO.lang)); studioStatus("reverted to the starter controller");
+  });
   $("dbgBtn").addEventListener("click", dbgStart);
   $("dbgStepLine").addEventListener("click", dbgStepLine);
   $("dbgStepTick").addEventListener("click", dbgStepTick);

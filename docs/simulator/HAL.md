@@ -346,10 +346,14 @@ mechanical, not aspirational:
      integration test and the C++ studio starter all decode from the generated
      descriptor. `retries`/`hold` became visible for free.
    - **P2b — pending:** the `WATCH` macro for locals/derived values (§H-8.2).
-3. **P3 — layout v2 binding + validation.** `base[]`/`io` schema, §H-7
-   validators, shared with the browser; generate `P1am*` wiring.
-4. **P4 — Studio project tree.** Multi-file editing, `layout.json` tab with live
-   validation + Apply (§H-9).
+3. **P3 — layout v2 binding + validation. ✅ DONE (2026-07-27).** `base[]`/`io`
+   schema, VAL-H1..H7 validators (20 tests), generated `Binding.h`, hand-written
+   `P1amMachine`, and the CI-H1 portability test: the same `Controller.cpp` drives
+   the P1AM machine to a finished s'more. Timings moved to the layout (OQ-2).
+4. **P4 — Studio project tree. ✅ DONE (2026-07-27).** Multi-file editing
+   (controller / `layout.json` / HAL / generated), live layout validation via the
+   SAME validator codegen uses, Apply that regenerates the contract in-browser and
+   recompiles C++ against it, plus layout export.
 5. **P5 — module-level tests in-browser (future).** Compile and run unit tests
    over the subsystem/HAL code in the Studio.
 
@@ -357,24 +361,21 @@ mechanical, not aspirational:
 prioritized. P3 is what makes the real-hardware story real; it is independent of
 P4 and can land first.
 
-## H-12. Open questions
+## H-12. Open questions — RESOLVED (2026-07-27)
+
+All were decided while implementing P2–P4; recorded here with what was actually done.
 
 - **OQ-1 Interface granularity.** Is `IDispenser` right, or should gate and
   actuator be separate interfaces (`IGate`, `IActuator`) that a dispenser
   composes? Composition is more flexible for odd machines; one interface per
-  station is simpler to teach. *Recommendation: keep `IDispenser`; revisit if a
-  layout needs a gate without a dispenser.*
+  station is simpler to teach. **Decided: kept `IDispenser`.** One interface per station is simpler to teach; revisit only if a layout needs a gate with no dispenser.
 - **OQ-2 Who owns dwell/timing constants** (`dispense_ms`, `toast_ms`)? Today
   they are controller `Config`. They are arguably machine properties belonging in
-  the layout. *Recommendation: move to the layout, since two different machines
-  should be able to differ; keep a controller override.*
+  the layout. **Decided: moved to the layout** (`DISP[].dispense_ms`, `TUNNEL_TOAST_MS`). Controller `Config` is now policy only (`max_retries`).
 - **OQ-3 Module config field sets.** The exact configuration payload for
   `P1-04THM` / `P1-04NTC` / `P1-04AD-2` must be read from the offline references
-  before §H-6.3 is implemented; if a field is not published offline, record the
-  gap rather than invent it (CLAUDE.md rule 3).
+  before §H-6.3 is implemented; **Decided: carried as an opaque byte array and LENGTH-checked only.** The real API takes `char cfgData[]` and the per-field meaning is NOT published offline (the vendor config tool is JS-rendered), so inventing fields was not an option [ref: docs/references/facts-docs/api_reference.md:97-100].
 - **OQ-4 `WATCH` on hardware.** No-op, serial, or P1AM-ETH by default?
-  *Recommendation: no-op by default, opt-in serial, to avoid surprising timing
-  cost in a control loop.*
+  **Decided: no-op unless `SMORES_WATCH_ENABLE=1`,** so it cannot perturb a real control loop; the sim (wasm) enables it automatically.
 - **OQ-5 Schema migration.** Auto-upgrade v1 layouts in the UI, or require an
-  explicit `"schema": 2`? *Recommendation: treat missing `schema` as 1 and accept
-  it (sim-only), so nothing in the repo breaks.*
+  explicit `"schema": 2`? **Decided: missing `schema` means 1 and is accepted** (sim-only). Every pre-existing layout still builds untouched.

@@ -55,11 +55,20 @@ app:
 	  $(MAKE) -s -C controller wasm LAYOUT=$$L >/dev/null; \
 	  cp controller/build/controller.wasm docs/app/wasm/$$L.wasm; \
 	  cp controller/generated/$$L.meta.json docs/app/layouts/$$L.layout.json; \
+	  cp controller/layouts/$$L.json        docs/app/layouts/$$L.src.json; \
 	  cp controller/include/smores/generated/Layout.h   docs/app/layouts/$$L.Layout.h; \
 	  cp controller/include/smores/generated/Contract.h docs/app/layouts/$$L.Contract.h; \
 	  cp controller/include/smores/generated/State.h    docs/app/layouts/$$L.State.h; \
 	done
 	@$(MAKE) -s -C controller codegen LAYOUT=classic3 >/dev/null   # leave default checked out
+	@# The Studio is a project tree (HAL.md §H-9): serve the actual controller/HAL
+	@# sources it lets you read and edit, the module catalog, and the ONE layout
+	@# validator that codegen uses — so the browser and the build agree by construction.
+	@mkdir -p docs/app/src/smores docs/app/tools
+	@cp controller/include/smores/*.h        docs/app/src/smores/
+	@cp controller/src/Controller.cpp        docs/app/src/
+	@cp shared/module_db.h                   docs/app/src/
+	@cp tools/layout/codegen.mjs tools/layout/modules.mjs docs/app/tools/
 	@echo "app assembled -> docs/app/  (layouts: $(APP_LAYOUTS)) — run 'make serve' to view"
 
 ## wasm-clang: vendor the in-browser C++ -> WASM toolchain (clang+lld+sysroot,

@@ -25,6 +25,8 @@ build/
 docs/app/controller.wasm
 docs/app/wasm/
 docs/app/layouts/
+docs/app/src/
+docs/app/tools/
 
 # Generated typed contract + layout meta (codegen from controller/layouts/*.json).
 # Source of truth is the layout JSON; regenerate with `make -C controller codegen`.

@@ -4,6 +4,12 @@ Status: **draft for approval** (2026-07-24). Extends
 [REQUIREMENTS.md](REQUIREMENTS.md); where this doc says "§N" without a file it
 means a section of that document, and "§L-N" means a section here.
 
+> **See also** [HAL.md](HAL.md): the hardware-abstraction boundary is formalized
+> at the **subsystem** level, and the layout gains an **I/O binding** (module /
+> slot / channel per signal) so a real-hardware implementation can be generated
+> and validated. HAL.md §H-6 supersedes the contract shape discussed in §L-5
+> below for anything hardware-facing.
+
 This spec turns the line from a **fixed** topology (3 dispensers → tunnel, hard-
 coded `[0..2]` arrays in the §4 contract) into a **data-driven, end-user-
 configurable** one. The immediate motivating change — a **second graham

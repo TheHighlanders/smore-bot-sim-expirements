@@ -489,6 +489,11 @@ void tick() {
       </section>
 
       <section class="panel">
+        <div class="panel-hd"><h2>Watch</h2><span class="hint">WATCH() from inside the loop</span></div>
+        <div class="io-col" id="watchRows" style="padding:8px 14px"></div>
+      </section>
+
+      <section class="panel">
         <div class="panel-hd"><h2>Decision log</h2><span class="hint">controller</span></div>
         <div class="log" id="log"></div>
       </section>
@@ -613,8 +618,12 @@ void tick() {
   let currentLayout = LAYOUT_CHOICES[0].name;   // which layout is loaded
   const _wasmCache = {};                        // name -> compiled WebAssembly.Module
   async function loadLayout(name){
-    const meta = await (await fetch(`./layouts/${name}.layout.json`)).json();
-    if (!_wasmCache[name]) _wasmCache[name] = await WebAssembly.compile(await (await fetch(`./wasm/${name}.wasm`)).arrayBuffer());
+    // `no-cache` = always revalidate. The meta and the .wasm are a matched pair
+    // (the meta describes the struct layout the wasm was compiled with), so a
+    // stale copy of either would decode garbage. The service worker still
+    // provides the offline fallback.
+    const meta = await (await fetch(`./layouts/${name}.layout.json`, {cache:"no-cache"})).json();
+    if (!_wasmCache[name]) _wasmCache[name] = await WebAssembly.compile(await (await fetch(`./wasm/${name}.wasm`, {cache:"no-cache"})).arrayBuffer());
     LAYOUT = meta; LAYOUT.module = _wasmCache[name];
     N_DISP = meta.dispensers.length;
     STATIONS = meta.dispensers.map(d => ({
@@ -645,6 +654,19 @@ void tick() {
   // Struct offsets come from the layout meta (IN_OFF/OUT_OFF); arrays are N_DISP
   // long. So the same JS drives a 3- or 4-dispenser line unchanged.
   const _dec = new TextDecoder();
+  // ---- WATCH telemetry (HAL.md §H-8.2) ----
+  // Values the controller publishes from inside a tick via WATCH(name, value) —
+  // locals and "why did it decide that" quantities the generated state block
+  // can't reach (e.g. drift_mm, which exists for one line).
+  //
+  // STICKY: last value wins and persists, like a PLC tag table / HMI watch window.
+  // Per-tick clearing would make drift_mm flicker for one tick out of hundreds —
+  // the student would never see the number that explains the correction. The
+  // debugger snapshots this map per source line, so evolution is still visible.
+  let WATCHES = {};
+  function clearWatches(){ WATCHES = {}; }   // only on reset
+  function noteWatch(name, value){ WATCHES[name] = value; }
+  function wasmCStr(inst, p){ const u=new Uint8Array(inst.exports.memory.buffer); let q=p; while(u[q])q++; return _dec.decode(u.subarray(p,q)); }
   // Decode the controller's Track array straight out of wasm memory using the
   // GENERATED descriptor (TRACK_OFF/TRACK_SIZE). No hand-written per-field
   // accessor on the C++ side, so every field is visible and nothing drifts when
@@ -675,7 +697,8 @@ void tick() {
     const cstr = (p) => { const u = new Uint8Array(inst.exports.memory.buffer); let q = p; while (u[q]) q++; return _dec.decode(u.subarray(p, q)); };
     const imp = {
       wasi_snapshot_preview1: { fd_close:()=>0, fd_seek:()=>0, fd_write:()=>0 },
-      env: { host_log:(kp,mp)=>{ e.log.push({ t:(sim?sim.t:0).toFixed(2), m:cstr(mp), k:cstr(kp) }); if (e.log.length>200) e.log.shift(); } },
+      env: { host_log:(kp,mp)=>{ e.log.push({ t:(sim?sim.t:0).toFixed(2), m:cstr(mp), k:cstr(kp) }); if (e.log.length>200) e.log.shift(); },
+             host_watch:(np,v)=>noteWatch(cstr(np), v) },
     };
     inst = new WebAssembly.Instance(LAYOUT.module, imp);
     inst.exports._initialize();
@@ -720,6 +743,7 @@ void tick() {
   function activate(e){ world=e.world; ctrl=e.ctrl; activeLog=e.log; }
 
   function reset(){
+    clearWatches();                 // watches are sticky within a run
     engines = viewMode==="studio"  ? [ STUDIO.lang==="cpp" ? makeCppEngine(STUDIO.cppModule) : makeJsEngine() ]
             : viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)]
             :                        [makeEngine(modeA)];
@@ -1084,7 +1108,16 @@ void tick() {
     const disp = e.ctrl.out.dispense.map((d,i)=>d?STATIONS[i].id:null).filter(Boolean);
     $("out-disp").textContent = disp.length?disp.join(","):"—"; $("out-disp").className="val"+(disp.length?" on":" off");
     $("out-heat").textContent = e.ctrl.out.heater?"ON":"off"; $("out-heat").className="val"+(e.ctrl.out.heater?" hot":" off");
-    drawTrays(); drawLog(e.log, "log");
+    drawWatches(); drawTrays(); drawLog(e.log, "log");
+  }
+  // Latest WATCH values. `drift_mm` is the headline one: how far dead-reckoning
+  // had drifted when a sensor finally saw the tray.
+  function drawWatches(){
+    const el=$("watchRows"); if(!el) return;
+    const keys=Object.keys(WATCHES);
+    el.innerHTML = keys.length
+      ? keys.map(k=>`<div class="io-row"><span class="lbl">${k}</span><span class="val">${fmtWatch(WATCHES[k])}</span></div>`).join("")
+      : `<div class="io-row"><span class="lbl" style="color:var(--muted-2)">no values published yet</span><span class="val off">—</span></div>`;
   }
 
   function renderCompare(){
@@ -1257,6 +1290,7 @@ void tick() {
       belt:v=>{ o.belt=+v||0; }, gate:(i,open)=>{ o.gate[i]=!!open; }, dispense:(i,on)=>{ o.dispense[i]=!!on; },
       tunnelGate:open=>{ o.tunnelGateOpen=!!open; }, heater:on=>{ o.heater=!!on; },
       log:(m,k)=>log(inp.t, String(m), k||"evt"),
+      watch:(n,v)=>noteWatch(String(n), Number(v)),   // same telemetry as C++ WATCH()
     };
   }
   const _statusName = s => (["moving","held","toasting","done","lost"].includes(s) ? s : "moving");
@@ -1315,7 +1349,7 @@ void tick() {
   function dbgTrace(line){
     if (!DBG.collecting) return;
     const o = DBG.snapOut;
-    DBG.trace.push({ line, mem: JSON.parse(JSON.stringify(DBG.engine.mem)),
+    DBG.trace.push({ line, mem: JSON.parse(JSON.stringify(DBG.engine.mem)), watch: {...WATCHES},
       out: { belt:o.belt, gate:o.gate.slice(), dispense:o.dispense.slice(), heater:o.heater, tunnelGateOpen:o.tunnelGateOpen } });
   }
   function instrumentForTrace(src){
@@ -1346,10 +1380,14 @@ void tick() {
     const tracks=(mem.tracks||[]).map(t=>`#${t.id} ${t.status} est=${(t.estPos||0).toFixed(0)} stage=${t.stage} placed=[${(t.placed||[]).join(",")}]`).join("<br>")||"— none yet —";
     const sens=STATIONS.map((s,i)=>`${s.id}:${inp.sense[i]?1:0}`).join("  ");
     const outs=`belt=${Math.round(out.belt||0)}  gate=[${(out.gate||[]).map(g=>g?1:0).join("")}]  disp=[${(out.dispense||[]).map(d=>d?1:0).join("")}]  heater=${out.heater?1:0}`;
-    v.innerHTML = `<div class="col"><h4>tray tracking (mem)</h4><div class="trk">${tracks}</div></div>`
+    const w = entry.watch||{}, wk = Object.keys(w);
+    const watches = wk.length ? wk.map(k=>`<b>${k}</b> = ${fmtWatch(w[k])}`).join("<br>") : "— nothing published yet —";
+    v.innerHTML = `<div class="col"><h4>tray tracking (state)</h4><div class="trk">${tracks}</div></div>`
+      + `<div class="col"><h4>watch (WATCH / io.watch)</h4><div class="kv">${watches}</div></div>`
       + `<div class="col"><h4>inputs this cycle</h4><div class="kv">sense ${sens}<br>tunnel in/out ${inp.tunnel_entry?1:0}/${inp.tunnel_exit?1:0} · temp ${Math.round(inp.tunnel_temp)}°</div></div>`
       + `<div class="col"><h4>outputs (computed so far)</h4><div class="kv">${outs}</div></div>`;
   }
+  const fmtWatch = v => (Number.isFinite(v) && Math.abs(v) < 1e6) ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v);
   function dbgShow(){
     if (!DBG.trace.length){ studioStatus("cycle ran with no traceable lines — press ⏭ Tick to advance", "ok"); dbgClear(); return; }
     const entry = DBG.trace[Math.min(DBG.pos, DBG.trace.length-1)];
@@ -1514,7 +1552,8 @@ void tick() {
     inst = new WebAssembly.Instance(module, {
       wasi_snapshot_preview1: { fd_close:()=>0, fd_seek:()=>0, fd_write:()=>0, proc_exit:()=>0 },
       env: { host_log:(kp,mp)=>{ e.log.push({ t:(sim?sim.t:0).toFixed(2), m:cstr(mp), k:cstr(kp) }); if(e.log.length>200) e.log.shift(); },
-             host_trace:(line)=>cppTrace(line) },
+             host_trace:(line)=>cppTrace(line),
+             host_watch:(np,v)=>noteWatch(cstr(np), v) },
     });
     if (inst.exports.__wasm_call_ctors) inst.exports.__wasm_call_ctors();
     e.wasm = { inst, inPtr: inst.exports.inputs_ptr(), outPtr: inst.exports.outputs_ptr() };
@@ -1528,7 +1567,7 @@ void tick() {
     const tr = decodeTracks(inst);            // generated descriptor, same as the built-in path
     const out = { belt:dv.getFloat32(p+OUT_OFF.belt_speed,true), gate:[], dispense:[], heater:("heater" in OUT_OFF)&&!!dv.getUint8(p+OUT_OFF.heater) };
     for (let k=0;k<N_DISP;k++){ out.gate.push(!!dv.getUint8(p+OUT_OFF.gate_open+k)); out.dispense.push(!!dv.getUint8(p+OUT_OFF.dispense+k)); }
-    DBG.trace.push({ line, mem:{ tracks:tr }, out });
+    DBG.trace.push({ line, mem:{ tracks:tr }, watch:{...WATCHES}, out });
   }
   function dbgPrimeCpp(){
     const e=DBG.engine;

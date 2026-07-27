@@ -25,9 +25,14 @@ const outOff = Object.fromEntries(M.offsets.outputs.fields.map(f => [f.name, f.o
 
 const noop = () => 0;
 let logCount = 0;
+const watches = {};                        // last value per WATCH(name, value)
+const cstr = (p) => { const u = new Uint8Array(ex.memory.buffer); let q = p; while (u[q]) q++; return new TextDecoder().decode(u.subarray(p, q)); };
 const imports = {
   wasi_snapshot_preview1: { fd_close: noop, fd_seek: noop, fd_write: noop },
-  env: { host_log: () => { logCount++; } },
+  env: {
+    host_log: () => { logCount++; },
+    host_watch: (np, v) => { watches[cstr(np)] = v; },
+  },
 };
 const OPEN = 0, CLOSED = 1;
 
@@ -165,6 +170,12 @@ check("open-loop + flaky graham: still completes (oblivious)", r.status === 3, `
 r = run(CLOSED, 0);
 check("closed-loop + flaky graham: recovers (graham present)", r.counts[0] === 1, `counts=${r.counts}`);
 check("closed-loop + flaky graham: completes", r.status === 3, `status=${r.status}`);
+
+// WATCH telemetry (HAL.md §H-8.2): drift_mm exists only as a local at the sensor
+// snap, so it proves we can observe a value the generated state block can't reach.
+check("WATCH published dt_ms + tracked", "dt_ms" in watches && "tracked" in watches, `keys=${Object.keys(watches)}`);
+check("WATCH published drift_mm (dead-reckoning error at a sensor snap)",
+      "drift_mm" in watches && Number.isFinite(watches.drift_mm), `drift_mm=${watches.drift_mm}`);
 
 // Layout-specific: a post-tunnel cap must also be placed (sandwich et al.)
 const cap = M.dispensers.findIndex(d => d.role === "cap");

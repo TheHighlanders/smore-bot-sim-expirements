@@ -1,4 +1,5 @@
 #include "smores/Controller.h"
+#include "smores/Watch.h"
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
@@ -30,6 +31,8 @@ void Controller::update() {
     if (dt < 0.f || dt > 0.5f) dt = 0.f;           // guard against clock jumps
     last_now_ = now; have_now_ = true;
     const bool run = m_.clock->running();
+    WATCH("dt_ms", dt * 1000.f);
+    WATCH("tracked", (int)tracks_.size());
 
     // ---- read inputs through the subsystem interfaces ----
     bool    sense[layout::N_DISP]; uint8_t confirm[layout::N_DISP];
@@ -56,6 +59,10 @@ void Controller::update() {
             }
             if (tr) {
                 float corr = layout::DISP[k].pos_mm - tr->est_pos_mm;
+                // The core teaching quantity: how far dead-reckoning had drifted by
+                // the time a real sensor saw the tray. It exists only on this line,
+                // so the generated state block can't show it — WATCH can.
+                WATCH("drift_mm", corr);
                 tr->est_pos_mm = layout::DISP[k].pos_mm;       // snap: correct drift
                 if (tr->stage == layout::DISP[k].stage) {      // this dispenser is next in the recipe
                     tr->status = Held; tr->hold = k; tr->retries = 0; tr->phase_until = now + cfg_.dispense_ms;

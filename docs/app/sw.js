@@ -8,7 +8,7 @@
 // CDN assets (Monaco, Pyodide) are left to the browser's HTTP cache.
 //
 // Bump CACHE to invalidate everything (e.g. if the vendored toolchain changes).
-const CACHE = "smores-line-v1";
+const CACHE = "smores-line-v2";
 const TOOLCHAIN = /\/vendor\/wasm-clang\//;   // large + immutable -> cache-first
 
 self.addEventListener("install", (e) => { self.skipWaiting(); });
@@ -40,16 +40,20 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // app shell (html / wasm / layouts / meta): network-first, fall back to cache
+  // App shell (html / wasm / layouts / meta): network-first, fall back to cache
+  // only when the network genuinely fails. `cache: "no-cache"` forces revalidation
+  // so a redeploy can never be masked by the browser's own HTTP cache — these
+  // files are small, and serving a stale shell against fresh .wasm/meta would be
+  // a confusing class of bug.
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
-      const res = await fetch(req);
-      if (res.ok) cache.put(req, res.clone());
+      const res = await fetch(req, { cache: "no-cache" });
+      if (res.status === 200) cache.put(req, res.clone());
       return res;
     } catch (err) {
       const hit = await cache.match(req);
-      if (hit) return hit;
+      if (hit) return hit;                 // offline: last known good
       throw err;
     }
   })());

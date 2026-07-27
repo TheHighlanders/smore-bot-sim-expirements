@@ -1681,6 +1681,10 @@ void tick() {
           (await fetch(`./layouts/${currentLayout}.State.h`, {cache:"no-cache"})).text(),
         ]);
     api.memfs.addFile("Layout.h", L); api.memfs.addFile("Contract.h", C); api.memfs.addFile("State.h", S);
+    // Watch.h is a hand-written controller header (not generated), so it comes
+    // from the staged sources — the starter includes it for WATCH(name, value).
+    if (!STUDIO.watchHdr) STUDIO.watchHdr = await (await fetch("./src/smores/Watch.h", {cache:"no-cache"})).text();
+    api.memfs.addFile("Watch.h", STUDIO.watchHdr);
     const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(STUDIO.editor.getValue());
     studioStatus("compiling your C++ with clang → WebAssembly (in the browser)…");
     await api.compile({ input:"ctrl.cc", contents:src, obj:"ctrl.o" });

@@ -1,53 +1,78 @@
-// Subsystem unit tests: each method is a stateless intent -> one HAL call.
+// HAL unit tests: each subsystem method is a single intent that must land on the
+// right contract field (HAL.md §H-2.1). These are the sim-side equivalent of
+// "writeDiscrete(slot, channel) set the expected module output bit" — when the
+// P1am* implementations land, the same assertions run against a mock P1AM base.
 // Build+run: see controller/Makefile (host-test). No simulator needed.
-#include "smores/Subsystems.h"
+#include "smores/SimMachine.h"
 #include <cassert>
 #include <cstdio>
 using namespace smores;
 
-struct MockHal : Hal {
-    // scripted inputs
-    bool tray[3]={false,false,false}; bool tin=false,tout=false; float temp=20; uint8_t conf[3]={0,0,0}; bool run=true; uint32_t now=0;
-    // recorded last outputs
-    float belt=-1; int gateS=-1; bool gateOpen=false; int dispS=-1; bool dispOn=false; int tgate=-1; bool heater=false;
-    uint32_t nowMs() override { return now; }
-    bool running() override { return run; }
-    bool trayPresent(int s) override { return tray[s]; }
-    bool tunnelEntry() override { return tin; }
-    bool tunnelExit() override { return tout; }
-    float tunnelTempC() override { return temp; }
-    uint8_t dispenseConfirm(int s) override { return conf[s]; }
-    void setBeltSpeed(float v) override { belt=v; }
-    void setGate(int s,bool o) override { gateS=s; gateOpen=o; }
-    void setDispense(int s,bool o) override { dispS=s; dispOn=o; }
-    void setTunnelGate(bool o) override { tgate=o?1:0; }
-    void setHeater(bool o) override { heater=o; }
-};
-
 int main() {
-    MockHal h;
+    Inputs in; Outputs out;
+    SimMachine sim(&in, &out);
+    Machine& m = sim.machine();
 
-    Conveyor cv(h);
-    cv.run(110.f);  assert(h.belt==110.f);
-    cv.stop();      assert(h.belt==0.f);
+    // ---- wiring: every subsystem the layout declares is present ----
+    assert(m.clock && m.belt);
+    for (int k = 0; k < layout::N_DISP; k++) assert(m.disp[k]);
+#if SMORES_HAS_TUNNEL
+    assert(m.tunnel);
+#else
+    assert(!m.tunnel);
+#endif
+    assert(Machine::nDisp() == layout::N_DISP);
 
-    Station st(h, 1);
-    assert(st.index()==1);
-    h.tray[1]=true;  assert(st.trayPresent());
-    h.tray[1]=false; assert(!st.trayPresent());
-    st.hold(true);   assert(h.gateS==1 && h.gateOpen==false);   // hold => gate NOT open
-    st.hold(false);  assert(h.gateS==1 && h.gateOpen==true);
-    st.runDispenser(true);  assert(h.dispS==1 && h.dispOn==true);
-    st.runDispenser(false); assert(h.dispS==1 && h.dispOn==false);
-    h.conf[1]=2; assert(st.confirmedDrops()==2);
+    // ---- clock ----
+    in.now_ms = 1234; in.run = false;
+    assert(m.clock->nowMs() == 1234);
+    assert(m.clock->running() == false);
+    in.run = true; assert(m.clock->running() == true);
 
-    HeatingTunnel tun(h);
-    tun.heater(true);  assert(h.heater==true);
-    tun.hold(true);    assert(h.tgate==0);                      // hold => tunnel gate NOT open
-    tun.hold(false);   assert(h.tgate==1);
-    h.temp=180.f; assert(tun.temperatureC()==180.f);
-    h.tin=true; assert(tun.atEntry()); h.tout=true; assert(tun.atExit());
+    // ---- conveyor: intent -> belt_speed ----
+    m.belt->setSpeed(110.f); assert(out.belt_speed == 110.f);
+    m.belt->setSpeed(0.f);   assert(out.belt_speed == 0.f);
 
-    printf("test_subsystems: PASS\n");
+    // ---- dispensers: each one touches ONLY its own channel ----
+    for (int k = 0; k < layout::N_DISP; k++) {
+        in.sense[k] = true;  assert(m.disp[k]->trayPresent() == true);
+        in.sense[k] = false; assert(m.disp[k]->trayPresent() == false);
+
+        in.dispense_confirm[k] = 2; assert(m.disp[k]->confirmedDrops() == 2);
+        in.dispense_confirm[k] = 0; assert(m.disp[k]->confirmedDrops() == 0);
+
+        m.disp[k]->setGate(false); assert(out.gate_open[k] == false);
+        m.disp[k]->setGate(true);  assert(out.gate_open[k] == true);
+
+        m.disp[k]->runActuator(0, true);  assert(out.dispense[k] == true);
+        m.disp[k]->runActuator(0, false); assert(out.dispense[k] == false);
+
+        assert(m.disp[k]->servos() == layout::DISP[k].servos);
+
+        // no cross-talk: closing gate k leaves every other gate untouched
+        m.disp[k]->setGate(false);
+        for (int j = 0; j < layout::N_DISP; j++) if (j != k) assert(out.gate_open[j] == true);
+        m.disp[k]->setGate(true);
+    }
+
+    // an out-of-range servo for this layout is ignored, not undefined behaviour
+    m.disp[0]->runActuator(7, true);
+    assert(out.dispense[0] == false);
+
+#if SMORES_HAS_TUNNEL
+    // ---- tunnel ----
+    in.tunnel_entry = true;  assert(m.tunnel->atEntry() == true);
+    in.tunnel_entry = false; assert(m.tunnel->atEntry() == false);
+    in.tunnel_exit  = true;  assert(m.tunnel->atExit()  == true);
+    in.tunnel_exit  = false; assert(m.tunnel->atExit()  == false);
+    in.tunnel_temp_c = 205.f; assert(m.tunnel->temperatureC() == 205.f);
+
+    m.tunnel->setGate(false);   assert(out.tunnel_gate_open == false);
+    m.tunnel->setGate(true);    assert(out.tunnel_gate_open == true);
+    m.tunnel->setHeater(true);  assert(out.heater == true);
+    m.tunnel->setHeater(false); assert(out.heater == false);
+#endif
+
+    printf("test_subsystems: PASS (%d dispensers, tunnel=%d)\n", layout::N_DISP, SMORES_HAS_TUNNEL);
     return 0;
 }

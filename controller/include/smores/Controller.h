@@ -5,8 +5,7 @@
 // This is a faithful SKELETON ported from the verified JS mockup; the real
 // control logic may differ — the structure and the §4 contract are what matter.
 #pragma once
-#include "Subsystems.h"
-#include "Contract.h"
+#include "Machine.h"
 #include <vector>
 
 namespace smores {
@@ -39,9 +38,8 @@ using LogSink = void (*)(const char* kind, const char* msg);
 
 class Controller {
 public:
-    Controller(Hal& hal, Mode mode, Config cfg = Config(), LogSink log = nullptr)
-        : hal_(hal), mode_(mode), cfg_(cfg), log_(log),
-          conveyor_(hal), tunnel_(hal) {}
+    Controller(Machine& machine, Mode mode, Config cfg = Config(), LogSink log = nullptr)
+        : m_(machine), mode_(mode), cfg_(cfg), log_(log) {}
 
     void update();                                   // one control tick
     const std::vector<Track>& tracks() const { return tracks_; }
@@ -51,12 +49,10 @@ private:
     Track* nearest(float pos);
     void   say(const char* kind, const char* fmt, ...);
 
-    Hal&           hal_;
+    Machine&       m_;            // the HAL: subsystem interfaces (HAL.md §H-3)
     Mode           mode_;
     Config         cfg_;
     LogSink        log_;
-    Conveyor       conveyor_;
-    HeatingTunnel  tunnel_;
     std::vector<Track> tracks_;
     int      next_id_   = 1;
     bool     last_sense_[layout::N_DISP] = {};

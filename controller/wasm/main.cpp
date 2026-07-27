@@ -3,7 +3,7 @@
 // exposed track state. This is the seam that replaces the JS stand-in controller
 // in docs/simulator/mockup.html with the real C++ logic (unchanged UI).
 #include "smores/Controller.h"
-#include "smores/StructHal.h"
+#include "smores/SimMachine.h"
 using namespace smores;
 
 // Imported from the host (JS): the controller's decision log crosses the
@@ -12,9 +12,9 @@ extern "C" __attribute__((import_module("env"), import_name("host_log")))
 void host_log(const char* kind, const char* msg);
 static void wasm_log(const char* kind, const char* msg) { host_log(kind, msg); }
 
-static Inputs   g_in;
-static Outputs  g_out;
-static StructHal g_hal(&g_in, &g_out);
+static Inputs     g_in;
+static Outputs    g_out;
+static SimMachine g_machine(&g_in, &g_out);     // the HAL: Sim* subsystems over the contract
 static Controller* g_ctrl = nullptr;
 
 extern "C" {
@@ -26,7 +26,7 @@ __attribute__((export_name("outputs_ptr"))) Outputs* outputs_ptr() { return &g_o
 // mode: 0 = open-loop, 1 = closed-loop.
 __attribute__((export_name("init"))) void init(int mode) {
     delete g_ctrl;
-    g_ctrl = new Controller(g_hal, mode ? ClosedLoop : OpenLoop, Config(), wasm_log);
+    g_ctrl = new Controller(g_machine.machine(), mode ? ClosedLoop : OpenLoop, Config(), wasm_log);
 }
 __attribute__((export_name("tick"))) void tick() { if (g_ctrl) g_ctrl->update(); }
 

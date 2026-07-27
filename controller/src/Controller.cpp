@@ -25,16 +25,17 @@ void Controller::say(const char* kind, const char* fmt, ...) {
 }
 
 void Controller::update() {
-    const uint32_t now = hal_.nowMs();
+    const uint32_t now = m_.clock->nowMs();
     float dt = have_now_ ? (now - last_now_) / 1000.0f : 0.0f;
     if (dt < 0.f || dt > 0.5f) dt = 0.f;           // guard against clock jumps
     last_now_ = now; have_now_ = true;
-    const bool run = hal_.running();
+    const bool run = m_.clock->running();
 
-    // ---- read inputs via subsystems (stateless wrappers, made on demand) ----
+    // ---- read inputs through the subsystem interfaces ----
     bool    sense[layout::N_DISP]; uint8_t confirm[layout::N_DISP];
-    for (int k = 0; k < layout::N_DISP; k++) { Station st(hal_, k); sense[k] = st.trayPresent(); confirm[k] = st.confirmedDrops(); }
-    const bool tEntry = tunnel_.atEntry(), tExit = tunnel_.atExit();
+    for (int k = 0; k < layout::N_DISP; k++) { sense[k] = m_.disp[k]->trayPresent(); confirm[k] = m_.disp[k]->confirmedDrops(); }
+    const bool tEntry = m_.tunnel ? m_.tunnel->atEntry() : false;
+    const bool tExit  = m_.tunnel ? m_.tunnel->atExit()  : false;
 
     // ---- outputs (defaults) ----
     float belt = run ? layout::NOMINAL_SPEED : 0.f;
@@ -130,11 +131,13 @@ void Controller::update() {
             tr.status = Lost; say("crit", "tray #%d LOST (no exit edge)", tr.id);
         }
 
-    // ---- write outputs via subsystems ----
-    conveyor_.run(belt);
-    for (int k = 0; k < layout::N_DISP; k++) { Station st(hal_, k); st.hold(!gate[k]); st.runDispenser(disp[k]); }
-    tunnel_.hold(!tunnel_gate_open);
-    tunnel_.heater(heater);
+    // ---- write outputs through the subsystem interfaces ----
+    m_.belt->setSpeed(belt);
+    for (int k = 0; k < layout::N_DISP; k++) {
+        m_.disp[k]->setGate(gate[k]);
+        m_.disp[k]->runActuator(0, disp[k]);
+    }
+    if (m_.tunnel) { m_.tunnel->setGate(tunnel_gate_open); m_.tunnel->setHeater(heater); }
 }
 
 } // namespace smores

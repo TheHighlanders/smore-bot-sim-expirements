@@ -1,8 +1,9 @@
 // Controller logic tests. A compact fake world (belt + one tray + dispensers +
-// tunnel) drives the controller through the StructHal; we assert the resulting
-// actual contents and decision log. Mirrors the browser-verified behaviour.
+// tunnel) drives the controller through the SIM machine (the HAL); we assert the
+// resulting actual contents and decision log. Mirrors the browser-verified
+// behaviour. Assumes a 3-dispenser layout (the default, classic3).
 #include "smores/Controller.h"
-#include "smores/StructHal.h"
+#include "smores/SimMachine.h"
 #include <cassert>
 #include <cstdio>
 #include <cmath>
@@ -49,8 +50,8 @@ struct FakeWorld {
 static void run(Mode mode, bool flaky, int& g, int& c, int& m, std::string& log){
     g_log.clear();
     FakeWorld w; w.grahamFlaky = flaky;
-    StructHal hal(&w.in, &w.out);
-    Controller ctrl(hal, mode, Config(), sink);
+    SimMachine sim(&w.in, &w.out);
+    Controller ctrl(sim.machine(), mode, Config(), sink);
     uint32_t t = 0; const float dt = 0.02f;
     for (int i=0;i<1500;i++){ t += 20; w.sense(t); ctrl.update(); w.step(dt); }
     g = w.counts[0]; c = w.counts[1]; m = w.counts[2]; log = g_log;

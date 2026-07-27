@@ -21,10 +21,10 @@ controller/
 │   │   ├── Layout.h   #   compile-time geometry/counts (layout::N_DISP, DISP[], …)
 │   │   └── Contract.h #   the Inputs/Outputs structs for THIS layout
 │   ├── Contract.h     # thin shim -> generated/Contract.h (keeps includes working)
-│   ├── Hal.h          # abstract hardware interface (per-signal get/set)
-│   ├── Subsystems.h   # Conveyor / Station / HeatingTunnel — stateless intent
-│   ├── Controller.h   # the one stateful piece (tray tracking + state machine)
-│   └── StructHal.h    # HAL backed by the Contract structs (sim/WASM + tests)
+│   ├── Hal.h          # THE HAL: subsystem interfaces (IConveyor/IDispenser/…)
+│   ├── Machine.h      # the composition root the controller is handed
+│   ├── SimMachine.h   # Sim* HAL impl — backed by the Contract structs (WASM+tests)
+│   └── Controller.h   # the one stateful piece (tray tracking + state machine)
 ├── src/Controller.cpp # control logic (open-loop / closed-loop variants)
 ├── wasm/main.cpp      # WASM entry: init/tick + shared Inputs/Outputs pointers
 └── test/              # host unit tests (g++)
@@ -42,16 +42,22 @@ against — so a controller that names a module its layout lacks won't build. Se
 
 ## Design
 
-- **Subsystems** translate a single, stateless intent into a HAL call
-  (`station.hold(true)` → close that gate). No line logic lives here, so each
-  method is trivially unit-testable against a mock HAL.
+- **The HAL is the subsystem interfaces** ([`Hal.h`](include/smores/Hal.h),
+  formalized in [../docs/simulator/HAL.md](../docs/simulator/HAL.md)). The
+  controller talks to `IConveyor`/`IDispenser`/`ITunnel` and nothing else — it
+  never names a slot, channel, or the contract structs. All module communication
+  lives *inside* an implementation, so the same `Controller.cpp` runs in the
+  browser (`SimMachine`) and on a real P1AM base (`P1amMachine`, future).
+- Each subsystem method is a single stateless intent (`setGate(open)`), so it is
+  trivially unit-testable — see [test_subsystems.cpp](test/test_subsystems.cpp).
 - **Controller** owns everything stateful: dead-reckoned tray tracking, the
   per-station hold→dispense→release state machine, and the tunnel-gate toast
   hold. Two registry variants: **open-loop** (assumes each dispense worked) and
   **closed-loop** (reads `dispense_confirm`, retries a miss, flags over/under-fill).
-- **HAL swap** is the only thing that changes between targets: `StructHal` for
-  the visualizer/tests; a P1AM SPI HAL (reusing the earlier `P1AM_Sim` work) on
-  hardware.
+- **HAL swap** is the only thing that changes between targets: `SimMachine` for
+  the visualizer/tests; a `P1amMachine` whose subsystems hold slot/channel
+  bindings from the layout and drive the real base over SPI (reusing the earlier
+  [`lib/P1AM_Sim`](../lib/P1AM_Sim/P1AM_Sim.h) façade) on hardware.
 
 ## Build & test
 

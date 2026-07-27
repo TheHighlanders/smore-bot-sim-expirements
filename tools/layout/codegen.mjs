@@ -185,6 +185,15 @@ export function emitLayoutHeader(L) {
   return `${banner(L, "Layout.h")}#pragma once
 #include <cstdint>
 
+// Preprocessor mirrors of the layout facts below. Needed because a HAL
+// implementation must conditionally COMPILE against contract fields that only
+// exist for some layouts (a tunnel's sensors, a 2nd servo plane) — \`if constexpr\`
+// can't guard a member that isn't declared. See HAL.md §H-5.
+#define SMORES_N_DISP      ${L.dispensers.length}
+#define SMORES_MAX_SERVOS  ${L.maxServos}
+#define SMORES_HAS_TUNNEL  ${L.hasTunnel ? 1 : 0}
+#define SMORES_HAS_SMUSHER ${L.hasSmusher ? 1 : 0}
+
 namespace smores {
 namespace layout {
 

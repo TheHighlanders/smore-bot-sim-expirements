@@ -3,8 +3,9 @@
 //
 // The generated State block (generated/State.h) already exposes the controller's
 // *declared* state with no code at all. WATCH covers what that can't reach:
-// locals, intermediates, and "why did it decide that" quantities — e.g. the
-// dead-reckoning drift measured at a sensor snap, which exists only for one line.
+// values that exist only for a moment inside one update, and "why did it decide
+// that" numbers — for example how far our guess of a tray's position had drifted by
+// the time a sensor corrected it, which is computed and then gone.
 //
 // This is not sim-only scaffolding: it is the same discipline as exposing PLC tags
 // to an HMI. On the sim it crosses to the debugger's watch window; on hardware it
@@ -37,5 +38,25 @@ inline void publish(const char* name, float value) { host_watch(name, value); }
 
 // Evaluate nothing: a disabled WATCH must not change behaviour OR cost time.
 #define WATCH(name, value) ((void)0)
+
+#endif
+
+// ---------------------------------------------------------------------------
+// BREAKPOINT() — mark a spot where you want the step-debugger to stop so you can
+// look at your values. The Studio also tries to stop on every line automatically,
+// but that is guesswork on real C++; a BREAKPOINT() you place yourself is exact.
+//
+// Like WATCH, this disappears completely on a real board: it only does something
+// when the Studio compiles your file with tracing switched on.
+#if defined(SMORES_TRACE_ENABLE) && SMORES_TRACE_ENABLE
+
+extern "C" __attribute__((import_module("env"), import_name("host_trace")))
+void host_trace(int sourceLineNumber);
+
+#define BREAKPOINT() host_trace(__LINE__)
+
+#else
+
+#define BREAKPOINT() ((void)0)
 
 #endif

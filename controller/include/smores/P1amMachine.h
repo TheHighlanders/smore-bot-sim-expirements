@@ -99,7 +99,8 @@ public:
     }
 
     // Enumerate the base and configure any module that needs it, BEFORE the first
-    // read (H-5.4). Mirrors the real `while (!P1.init()) {}` startup idiom
+    // read (H-5.4). This is the same startup shape a real sketch uses,
+    // `while (!P1.init()) {}`
     // [ref: docs/references/p1am-library.md#discrete-api -> P1AM.h:45].
     bool begin() {
         if (!p1_.init()) return false;

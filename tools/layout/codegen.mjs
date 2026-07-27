@@ -288,8 +288,8 @@ struct Track {
 ${flds.map(cFieldDecl).join("\n")}
 };
 
-// Guards against this generated descriptor drifting from what the compiler
-// actually lays out — if this fires, the UI would be decoding garbage.
+// If this check ever fails, the app's idea of how a Track is arranged in memory no
+// longer matches what the compiler produced, and it would show meaningless numbers.
 static_assert(sizeof(Track) == ${size}, "Track layout must match the generated descriptor");
 
 } // namespace smores

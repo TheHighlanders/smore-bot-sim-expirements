@@ -180,7 +180,8 @@
   .lang-tab:disabled { opacity:.45; cursor:not-allowed; }
   .studio-hd .spacer { flex:1; }
   #editor { width:100%; height:420px; }
-  .studio-status { padding:8px 14px; border-top:1px solid var(--hair); font:11px/1.5 var(--mono); color:var(--muted); min-height:20px; }
+  .studio-status { padding:8px 14px; border-top:1px solid var(--hair); font:11px/1.5 var(--mono); color:var(--muted); min-height:20px;
+    white-space:pre-wrap; max-height:150px; overflow-y:auto; }
   .studio-status.ok { color:var(--good); }
   .studio-status.err { color:var(--crit); }
   .studio-note { font:11px/1.5 var(--mono); color:var(--muted-2); }
@@ -273,190 +274,607 @@
   <!-- Starter controllers (inert; read as text). All three target the same §4
        contract via a layout-aware `io` API and declare `requires` so the runtime
        can check compatibility against the active layout (LAYOUTS.md ER-5). -->
-  <script type="text/plain" id="starter-js">// Open-loop controller (JavaScript). A controller is a BOUND PAIR with its
-// layout: declare what you need, and the runtime checks it before running —
-// the JS/Python equivalent of the C++ compile-time contract check.
-const requires = { dispensers: ["g1", "c1", "m1"], tunnel: true };
+  <script type="text/plain" id="starter-js">// This is the brain of the s'mores line. You are writing the code that decides,
+// many times a second, what every motor and gate should be doing right now.
+//
+// The line cannot see a tray between its sensors, so a big part of the job is
+// remembering where you believe each tray is, and correcting that belief whenever
+// a sensor proves you wrong.
 
-// tick() runs once per control cycle. `mem` persists across ticks (keep your
-// tray tracking here); `io` is your window on the line (API note below editor).
-function tick(io, mem) {
-  if (!mem.tracks) { mem.tracks = []; mem.lastSense = io.dispensers.map(() => false); }
-  io.belt(io.run ? io.nominal : 0);
+// Say which parts of the machine your code expects. Before running, the app checks
+// this against the real layout and refuses to start if something is missing.
+const thisControllerNeeds = { dispensers: ["g1", "c1", "m1"], tunnel: true };
 
-  // dead-reckon every moving tray between sensors
-  for (const t of mem.tracks) if (t.status === "moving") t.estPos += io.beltCmd * io.dt;
-
-  // at each dispenser: on a sensor RISING edge, snap position, hold + dispense
-  for (const d of io.dispensers) {
-    const rise = io.sense(d.index) && !mem.lastSense[d.index];
-    if (rise) {
-      let t = nearest(mem.tracks, d.pos);
-      if (!t && d.index === 0) { t = { id: mem.tracks.length + 1, estPos: d.pos, stage: 0, status: "moving", hold: -1, placed: io.dispensers.map(() => 0) }; mem.tracks.push(t); io.log("tray #" + t.id + " detected", "evt"); }
-      if (t) { io.watch("drift_mm", d.pos - t.estPos);   // dead-reckoning error, corrected here
-               t.estPos = d.pos; if (t.stage === d.stage) { t.status = "held"; t.hold = d.index; t.until = io.nowMs + 650; } }
-    }
-    mem.lastSense[d.index] = io.sense(d.index);
+// `machine` lets you read sensors and command motors. `memory` is yours to keep:
+// it is the same object every update, so whatever you store in it survives.
+function runOneControlCycle(machine, memory) {
+  const isFirstUpdateEver = !memory.traysBeingTracked;
+  if (isFirstUpdateEver) {
+    memory.traysBeingTracked = [];
+    memory.trayWasAtDispenser = machine.dispensers.map(() => false);
   }
 
-  // service holds: keep the dispenser running, then (OPEN-LOOP) assume it worked
-  for (const t of mem.tracks) {
-    if (t.status === "held") {
-      io.gate(t.hold, false); io.dispense(t.hold, true);
-      if (io.nowMs >= t.until) { t.placed[t.hold] = 1; t.stage = io.dispensers[t.hold].stage + 1; t.status = "moving"; t.hold = -1; }
-    }
-  }
+  machine.setBeltSpeed(machine.isRunning ? machine.normalBeltSpeedMmPerSecond : 0);
 
-  // tunnel: dwell to toast, release; a tray is done once every stage is complete
-  if (io.tunnel && io.tunnelEntry()) { const t = nearest(mem.tracks, io.tunnel.entry); if (t && t.stage === io.tunnelStage && t.status === "moving") { t.status = "toasting"; t.until = io.nowMs + 3800; } }
-  for (const t of mem.tracks) if (t.status === "toasting" && io.nowMs >= t.until) { t.stage = io.tunnelStage + 1; t.status = "moving"; }
-  io.heater(mem.tracks.some(t => t.status === "toasting"));
-  io.tunnelGate(!mem.tracks.some(t => t.status === "toasting"));
-  for (const t of mem.tracks) if (t.status === "moving" && t.stage >= io.nStages) { t.status = "done"; io.log("s'more #" + t.id + " complete", "evt"); }
+  moveOurGuessForwardForEachTray(machine, memory);
+  lookForTraysArrivingAtDispensers(machine, memory);
+  keepDispensingUntilEnoughTimeHasPassed(machine, memory);
+  toastAnyTrayThatReachedTheTunnel(machine, memory);
+  markTraysThatFinishedEveryStep(machine, memory);
 
-  return mem.tracks;   // the visualizer renders these
+  return memory.traysBeingTracked;   // the app draws these as your ghost trays
 }
-function nearest(tracks, pos) { let b = null, bd = 1e9; for (const t of tracks) { if (t.status === "done") continue; const d = Math.abs(t.estPos - pos); if (d < bd && d < 120) { b = t; bd = d; } } return b; }
+
+// Nothing watches the tray between sensors, so we add up how far the belt should
+// have carried it. This guess slowly drifts away from the truth.
+function moveOurGuessForwardForEachTray(machine, memory) {
+  for (const tray of memory.traysBeingTracked) {
+    if (tray.status === "moving") {
+      const millimetresTravelled =
+        machine.beltSpeedCommandedLastUpdate * machine.secondsSinceLastUpdate;
+      tray.guessedPositionMm = tray.guessedPositionMm + millimetresTravelled;
+    }
+  }
+}
+
+function lookForTraysArrivingAtDispensers(machine, memory) {
+  for (const dispenser of machine.dispensers) {
+    const sensorSeesTrayNow = machine.isTrayAtDispenser(dispenser.index);
+    const sensorSawTrayBefore = memory.trayWasAtDispenser[dispenser.index];
+    const trayJustArrived = sensorSeesTrayNow && !sensorSawTrayBefore;
+
+    if (trayJustArrived) {
+      let tray = findTrayWeThinkIsNear(memory, dispenser.positionMm);
+
+      const isTheFirstDispenser = dispenser.index === 0;
+      if (!tray && isTheFirstDispenser) {
+        tray = startTrackingANewTray(machine, memory, dispenser);
+      }
+
+      if (tray) {
+        const howWrongOurGuessWasMm = dispenser.positionMm - tray.guessedPositionMm;
+        machine.watch("drift_mm", howWrongOurGuessWasMm);
+
+        // The sensor is the truth, so throw away the guess and use its position.
+        tray.guessedPositionMm = dispenser.positionMm;
+
+        const thisDispenserIsNextForThisTray = tray.stepsFinished === dispenser.stepNumber;
+        if (thisDispenserIsNextForThisTray) {
+          holdTrayHereAndStartDispensing(machine, tray, dispenser);
+        }
+      }
+    }
+
+    memory.trayWasAtDispenser[dispenser.index] = sensorSeesTrayNow;
+  }
+}
+
+function startTrackingANewTray(machine, memory, dispenser) {
+  const newTray = {
+    id: memory.traysBeingTracked.length + 1,
+    guessedPositionMm: dispenser.positionMm,
+    stepsFinished: 0,
+    status: "moving",
+    waitingAtDispenser: -1,
+    dispenseUntilClockMs: 0,
+    ingredientsWeBelieveWePlaced: machine.dispensers.map(() => 0),
+  };
+  memory.traysBeingTracked.push(newTray);
+  machine.log("now tracking tray #" + newTray.id);
+  return newTray;
+}
+
+const HOW_LONG_TO_RUN_A_DISPENSER_MS = 650;
+
+function holdTrayHereAndStartDispensing(machine, tray, dispenser) {
+  tray.status = "held";
+  tray.waitingAtDispenser = dispenser.index;
+  tray.dispenseUntilClockMs = machine.clockMs + HOW_LONG_TO_RUN_A_DISPENSER_MS;
+}
+
+// A dispenser needs to run for a while before an ingredient actually falls, so we
+// hold the tray still until enough time has gone by.
+function keepDispensingUntilEnoughTimeHasPassed(machine, memory) {
+  for (const tray of memory.traysBeingTracked) {
+    if (tray.status !== "held") continue;
+
+    const dispenser = machine.dispensers[tray.waitingAtDispenser];
+    machine.closeGate(dispenser.index);
+    machine.startDispensing(dispenser.index);
+
+    const dispenserHasRunLongEnough = machine.clockMs >= tray.dispenseUntilClockMs;
+    if (dispenserHasRunLongEnough) {
+      // This controller never checks whether anything really fell. It simply
+      // believes the dispenser worked -- which is exactly what goes wrong when a
+      // dispenser misfires. Try the "Fail g1" fault button and watch.
+      tray.ingredientsWeBelieveWePlaced[dispenser.index] = 1;
+      tray.stepsFinished = dispenser.stepNumber + 1;
+      tray.status = "moving";
+      tray.waitingAtDispenser = -1;
+    }
+  }
+}
+
+const HOW_LONG_TO_TOAST_MS = 3800;
+
+function toastAnyTrayThatReachedTheTunnel(machine, memory) {
+  const trayArrivedAtTunnel = machine.tunnel && machine.isTrayAtTunnelEntrance();
+  if (trayArrivedAtTunnel) {
+    const tray = findTrayWeThinkIsNear(memory, machine.tunnel.entrancePositionMm);
+    const trayIsReadyToToast =
+      tray && tray.status === "moving" && tray.stepsFinished === machine.stepNumberForToasting;
+    if (trayIsReadyToToast) {
+      tray.status = "toasting";
+      tray.dispenseUntilClockMs = machine.clockMs + HOW_LONG_TO_TOAST_MS;
+    }
+  }
+
+  let someTrayIsStillToasting = false;
+  for (const tray of memory.traysBeingTracked) {
+    if (tray.status !== "toasting") continue;
+
+    const toastingHasFinished = machine.clockMs >= tray.dispenseUntilClockMs;
+    if (toastingHasFinished) {
+      tray.stepsFinished = machine.stepNumberForToasting + 1;
+      tray.status = "moving";
+    } else {
+      someTrayIsStillToasting = true;
+    }
+  }
+
+  // Closing the tunnel gate keeps a tray inside long enough to actually toast.
+  if (someTrayIsStillToasting) {
+    machine.turnHeaterOn();
+    machine.closeTunnelGate();
+  } else {
+    machine.turnHeaterOff();
+    machine.openTunnelGate();
+  }
+}
+
+function markTraysThatFinishedEveryStep(machine, memory) {
+  for (const tray of memory.traysBeingTracked) {
+    const trayHasDoneEveryStep = tray.stepsFinished >= machine.stepsNeededToFinishASmore;
+    if (tray.status === "moving" && trayHasDoneEveryStep) {
+      tray.status = "done";
+      machine.log("s'more #" + tray.id + " is finished");
+    }
+  }
+}
+
+// Which tray do we believe is standing at this spot? Our guess is never perfect,
+// so accept the closest tray within a tray-and-a-bit.
+const HOW_CLOSE_COUNTS_AS_HERE_MM = 120;
+
+function findTrayWeThinkIsNear(memory, positionMm) {
+  let closestTray = null;
+  let smallestDistanceMm = Infinity;
+
+  for (const tray of memory.traysBeingTracked) {
+    if (tray.status === "done") continue;
+
+    const distanceMm = Math.abs(tray.guessedPositionMm - positionMm);
+    const isClosestSoFar = distanceMm < smallestDistanceMm;
+    if (isClosestSoFar && distanceMm < HOW_CLOSE_COUNTS_AS_HERE_MM) {
+      closestTray = tray;
+      smallestDistanceMm = distanceMm;
+    }
+  }
+  return closestTray;
+}
 </script>
 
-  <script type="text/plain" id="starter-python"># Open-loop controller (Python, runs via Pyodide). Same contract as the JS
-# version. `requires` is checked against the active layout before running.
-requires = { "dispensers": ["g1", "c1", "m1"], "tunnel": True }
+  <script type="text/plain" id="starter-python"># This is the brain of the s'mores line, written in Python.
+#
+# The line cannot see a tray between its sensors, so a big part of the job is
+# remembering where you believe each tray is, and correcting that belief whenever a
+# sensor proves you wrong.
 
-def nearest(tracks, pos):
-    best, bd = None, 1e9
-    for t in tracks:
-        if t["status"] == "done": continue
-        d = abs(t["estPos"] - pos)
-        if d < bd and d < 120: best, bd = t, d
-    return best
+# Say which parts of the machine your code expects. Before running, the app checks
+# this against the real layout and refuses to start if something is missing.
+this_controller_needs = {"dispensers": ["g1", "c1", "m1"], "tunnel": True}
 
-# tick() runs once per control cycle. `mem` is a dict that persists across ticks.
-def tick(io, mem):
-    if "tracks" not in mem:
-        mem["tracks"] = []; mem["lastSense"] = [False] * len(io.dispensers)
-    io.belt(io.nominal if io.run else 0)
+HOW_LONG_TO_RUN_A_DISPENSER_MS = 650
+HOW_LONG_TO_TOAST_MS = 3800
+HOW_CLOSE_COUNTS_AS_HERE_MM = 120
 
-    for t in mem["tracks"]:
-        if t["status"] == "moving": t["estPos"] += io.beltCmd * io.dt
+# `machine` lets you read sensors and command motors. Its method names come from the
+# app, so they look like setBeltSpeed rather than set_belt_speed.
+# `memory` is a plain dict that is handed back to you every update, so anything you
+# store in it survives to the next one.
+def run_one_control_cycle(machine, memory):
+    if "trays_being_tracked" not in memory:
+        memory["trays_being_tracked"] = []
+        memory["tray_was_at_dispenser"] = [False] * len(machine.dispensers)
 
-    for d in io.dispensers:
-        rise = io.sense(d.index) and not mem["lastSense"][d.index]
-        if rise:
-            t = nearest(mem["tracks"], d.pos)
-            if t is None and d.index == 0:
-                t = {"id": len(mem["tracks"]) + 1, "estPos": d.pos, "stage": 0,
-                     "status": "moving", "hold": -1, "placed": [0] * len(io.dispensers)}
-                mem["tracks"].append(t); io.log("tray #%d detected" % t["id"], "evt")
-            if t:
-                io.watch("drift_mm", d.pos - t["estPos"])   # dead-reckoning error
-                t["estPos"] = d.pos
-                if t["stage"] == d.stage:
-                    t["status"] = "held"; t["hold"] = d.index; t["until"] = io.nowMs + 650
-        mem["lastSense"][d.index] = io.sense(d.index)
+    if machine.isRunning:
+        machine.setBeltSpeed(machine.normalBeltSpeedMmPerSecond)
+    else:
+        machine.setBeltSpeed(0)
 
-    for t in mem["tracks"]:
-        if t["status"] == "held":
-            io.gate(t["hold"], False); io.dispense(t["hold"], True)
-            if io.nowMs >= t["until"]:
-                t["placed"][t["hold"]] = 1
-                t["stage"] = io.dispensers[t["hold"]].stage + 1
-                t["status"] = "moving"; t["hold"] = -1
+    move_our_guess_forward_for_each_tray(machine, memory)
+    look_for_trays_arriving_at_dispensers(machine, memory)
+    keep_dispensing_until_enough_time_has_passed(machine, memory)
+    toast_any_tray_that_reached_the_tunnel(machine, memory)
+    mark_trays_that_finished_every_step(machine, memory)
 
-    if io.tunnel and io.tunnelEntry():
-        t = nearest(mem["tracks"], io.tunnel.entry)   # JS object -> attribute access
-        if t and t["stage"] == io.tunnelStage and t["status"] == "moving":
-            t["status"] = "toasting"; t["until"] = io.nowMs + 3800
-    for t in mem["tracks"]:
-        if t["status"] == "toasting" and io.nowMs >= t["until"]:
-            t["stage"] = io.tunnelStage + 1; t["status"] = "moving"
-    toasting = any(t["status"] == "toasting" for t in mem["tracks"])
-    io.heater(toasting); io.tunnelGate(not toasting)
-    for t in mem["tracks"]:
-        if t["status"] == "moving" and t["stage"] >= io.nStages:
-            t["status"] = "done"; io.log("s'more #%d complete" % t["id"], "evt")
+    return memory["trays_being_tracked"]
 
-    return mem["tracks"]
+
+# Nothing watches the tray between sensors, so we add up how far the belt should have
+# carried it. This guess slowly drifts away from the truth.
+def move_our_guess_forward_for_each_tray(machine, memory):
+    for tray in memory["trays_being_tracked"]:
+        if tray["status"] == "moving":
+            millimetres_travelled = (machine.beltSpeedCommandedLastUpdate
+                                     * machine.secondsSinceLastUpdate)
+            tray["guessed_position_mm"] = tray["guessed_position_mm"] + millimetres_travelled
+
+
+def look_for_trays_arriving_at_dispensers(machine, memory):
+    for dispenser in machine.dispensers:
+        sensor_sees_tray_now = machine.isTrayAtDispenser(dispenser.index)
+        sensor_saw_tray_before = memory["tray_was_at_dispenser"][dispenser.index]
+        tray_just_arrived = sensor_sees_tray_now and not sensor_saw_tray_before
+
+        if tray_just_arrived:
+            tray = find_tray_we_think_is_near(memory, dispenser.positionMm)
+
+            is_the_first_dispenser = dispenser.index == 0
+            if tray is None and is_the_first_dispenser:
+                tray = start_tracking_a_new_tray(machine, memory, dispenser)
+
+            if tray is not None:
+                how_wrong_our_guess_was_mm = dispenser.positionMm - tray["guessed_position_mm"]
+                machine.watch("drift_mm", how_wrong_our_guess_was_mm)
+
+                # The sensor is the truth, so throw away the guess and use its position.
+                tray["guessed_position_mm"] = dispenser.positionMm
+
+                this_dispenser_is_next_for_this_tray = tray["steps_finished"] == dispenser.stepNumber
+                if this_dispenser_is_next_for_this_tray:
+                    hold_tray_here_and_start_dispensing(machine, tray, dispenser)
+
+        memory["tray_was_at_dispenser"][dispenser.index] = sensor_sees_tray_now
+
+
+def start_tracking_a_new_tray(machine, memory, dispenser):
+    new_tray = {
+        "id": len(memory["trays_being_tracked"]) + 1,
+        "guessed_position_mm": dispenser.positionMm,
+        "steps_finished": 0,
+        "status": "moving",
+        "waiting_at_dispenser": -1,
+        "dispense_until_clock_ms": 0,
+        "ingredients_placed": [0] * len(machine.dispensers),
+    }
+    memory["trays_being_tracked"].append(new_tray)
+    machine.log("now tracking tray #%d" % new_tray["id"])
+    return new_tray
+
+
+def hold_tray_here_and_start_dispensing(machine, tray, dispenser):
+    tray["status"] = "held"
+    tray["waiting_at_dispenser"] = dispenser.index
+    tray["dispense_until_clock_ms"] = machine.clockMs + HOW_LONG_TO_RUN_A_DISPENSER_MS
+
+
+# A dispenser needs to run for a while before an ingredient actually falls, so we hold
+# the tray still until enough time has gone by.
+def keep_dispensing_until_enough_time_has_passed(machine, memory):
+    for tray in memory["trays_being_tracked"]:
+        if tray["status"] != "held":
+            continue
+
+        dispenser_index = tray["waiting_at_dispenser"]
+        machine.closeGate(dispenser_index)
+        machine.startDispensing(dispenser_index)
+
+        dispenser_has_run_long_enough = machine.clockMs >= tray["dispense_until_clock_ms"]
+        if dispenser_has_run_long_enough:
+            # This controller never checks whether anything really fell. It simply
+            # believes the dispenser worked -- which is exactly what goes wrong when a
+            # dispenser misfires. Try the "Fail g1" fault button and watch.
+            tray["ingredients_placed"][dispenser_index] = 1
+            tray["steps_finished"] = machine.dispensers[dispenser_index].stepNumber + 1
+            tray["status"] = "moving"
+            tray["waiting_at_dispenser"] = -1
+
+
+def toast_any_tray_that_reached_the_tunnel(machine, memory):
+    tray_arrived_at_tunnel = machine.tunnel and machine.isTrayAtTunnelEntrance()
+    if tray_arrived_at_tunnel:
+        tray = find_tray_we_think_is_near(memory, machine.tunnel.entrancePositionMm)
+        tray_is_ready_to_toast = (tray is not None
+                                  and tray["status"] == "moving"
+                                  and tray["steps_finished"] == machine.stepNumberForToasting)
+        if tray_is_ready_to_toast:
+            tray["status"] = "toasting"
+            tray["dispense_until_clock_ms"] = machine.clockMs + HOW_LONG_TO_TOAST_MS
+
+    some_tray_is_still_toasting = False
+    for tray in memory["trays_being_tracked"]:
+        if tray["status"] != "toasting":
+            continue
+
+        toasting_has_finished = machine.clockMs >= tray["dispense_until_clock_ms"]
+        if toasting_has_finished:
+            tray["steps_finished"] = machine.stepNumberForToasting + 1
+            tray["status"] = "moving"
+        else:
+            some_tray_is_still_toasting = True
+
+    # Closing the tunnel gate keeps a tray inside long enough to actually toast.
+    if some_tray_is_still_toasting:
+        machine.turnHeaterOn()
+        machine.closeTunnelGate()
+    else:
+        machine.turnHeaterOff()
+        machine.openTunnelGate()
+
+
+def mark_trays_that_finished_every_step(machine, memory):
+    for tray in memory["trays_being_tracked"]:
+        tray_has_done_every_step = tray["steps_finished"] >= machine.stepsNeededToFinishASmore
+        if tray["status"] == "moving" and tray_has_done_every_step:
+            tray["status"] = "done"
+            machine.log("s'more #%d is finished" % tray["id"])
+
+
+# Which tray do we believe is standing at this spot? Our guess is never perfect, so
+# accept the closest tray within a tray-and-a-bit.
+def find_tray_we_think_is_near(memory, position_mm):
+    closest_tray = None
+    smallest_distance_mm = None
+
+    for tray in memory["trays_being_tracked"]:
+        if tray["status"] == "done":
+            continue
+
+        distance_mm = abs(tray["guessed_position_mm"] - position_mm)
+        is_close_enough = distance_mm < HOW_CLOSE_COUNTS_AS_HERE_MM
+        is_closest_so_far = smallest_distance_mm is None or distance_mm < smallest_distance_mm
+
+        if is_close_enough and is_closest_so_far:
+            closest_tray = tray
+            smallest_distance_mm = distance_mm
+
+    return closest_tray
 </script>
 
-  <script type="text/plain" id="starter-cpp">// Open-loop controller (C++), compiled to WebAssembly IN YOUR BROWSER and run on
-// the line. It #includes the layout-GENERATED contract, so naming a module the
-// layout lacks is a COMPILE error — the strongest bound-pair check. host_log/
-// host_trace are provided by the runtime; host_trace lets 🐞 Debug step this
-// file line by line. Freestanding (no std::), so it links against just libc.
-#include "Contract.h"        // generated from the active layout (pulls in Layout.h)
-#include "State.h"           // generated: enum Status + struct Track  <- your state
-#include "Watch.h"           // WATCH(name, value) -> the Watch panel + debugger
+  <script type="text/plain" id="starter-cpp">// This is the brain of the s'mores line, written in C++ and compiled to
+// WebAssembly right here in your browser. The same style of code runs on the real
+// ProductivityOpen controller.
+//
+// The line cannot see a tray between its sensors, so a big part of the job is
+// remembering where you believe each tray is, and correcting that belief whenever
+// a sensor proves you wrong.
+
+#include "Contract.h"   // sensorReadings / commandsToTheMachine come from your layout
+#include "State.h"      // Track: what you believe about one tray
+#include "Watch.h"      // WATCH(name, value) and BREAKPOINT()
 using namespace smores;
 
+// Writes a sentence into the Decision log so you can explain your reasoning.
 extern "C" __attribute__((import_module("env"), import_name("host_log")))
-void host_log(const char* kind, const char* msg);
+void host_log(const char* kind, const char* message);
 
-static Inputs  g_in;         // the visualizer writes sensors here each tick
-static Outputs g_out;        // ...reads your actuator commands from here
+// The app fills this in with what the sensors currently see...
+static Inputs  sensorReadings;
+// ...and reads this to find out what you want the machine to do.
+static Outputs commandsToTheMachine;
 
-// Your tray tracking (the controller's BELIEF, never the world's truth). `Track`
-// is GENERATED, so the debugger can already see every field of it — you don't
-// write any accessors. Fields: id, est_pos_mm, stage, status, hold, phase_until,
-// placed[], retries.
-static Track    g_tr[8]; static int g_n = 0;
-static bool     g_last[layout::N_DISP];
-static unsigned g_lastNow = 0; static bool g_have = false;
+// Your memory between updates. Embedded controllers avoid growing lists, so this is
+// a fixed-size array plus a count of how much of it is in use.
+static const int MOST_TRAYS_WE_CAN_TRACK = 8;
+static Track traysBeingTracked[MOST_TRAYS_WE_CAN_TRACK];
+static int   howManyTraysWeAreTracking = 0;
 
-static Track* nearest(float pos) {
-    Track* b = nullptr; float bd = 1e9f;
-    for (int i = 0; i < g_n; i++) { Track& t = g_tr[i];
-        if (t.status == Done) continue;
-        float d = t.est_pos_mm - pos; if (d < 0) d = -d;
-        if (d < bd && d < 120.f) { bd = d; b = &t; } }
-    return b;
+static bool     trayWasAtDispenserLastUpdate[layout::N_DISP];
+static unsigned clockAtPreviousUpdateMs = 0;
+static bool     haveReadTheClockBefore  = false;
+
+static const unsigned HOW_LONG_TO_RUN_A_DISPENSER_MS = 650;
+static const unsigned HOW_LONG_TO_TOAST_MS           = 3800;
+static const float    HOW_CLOSE_COUNTS_AS_HERE_MM    = 120.0f;
+
+// Which tray do we believe is standing at this spot? Our guess is never perfect, so
+// accept the closest tray within a tray-and-a-bit.
+static Track* findTrayWeThinkIsNear(float positionMm) {
+    Track* closestTray = nullptr;
+    float  smallestDistanceMm = 1e9f;
+
+    for (int i = 0; i < howManyTraysWeAreTracking; i++) {
+        Track& tray = traysBeingTracked[i];
+        if (tray.status == Done) continue;
+
+        float distanceMm = tray.est_pos_mm - positionMm;
+        if (distanceMm < 0) distanceMm = -distanceMm;
+
+        if (distanceMm < smallestDistanceMm && distanceMm < HOW_CLOSE_COUNTS_AS_HERE_MM) {
+            smallestDistanceMm = distanceMm;
+            closestTray = &tray;
+        }
+    }
+    return closestTray;
 }
 
+// Nothing watches a tray between sensors, so we add up how far the belt should have
+// carried it. This guess slowly drifts away from the truth.
+static void moveOurGuessForwardForEachTray(float secondsSinceLastUpdate) {
+    for (int i = 0; i < howManyTraysWeAreTracking; i++) {
+        Track& tray = traysBeingTracked[i];
+        if (tray.status != Moving) continue;
+
+        float millimetresTravelled = commandsToTheMachine.belt_speed * secondsSinceLastUpdate;
+        tray.est_pos_mm = tray.est_pos_mm + millimetresTravelled;
+    }
+}
+
+static Track* startTrackingANewTray(int dispenserIndex) {
+    if (howManyTraysWeAreTracking >= MOST_TRAYS_WE_CAN_TRACK) return nullptr;
+
+    Track& newTray = traysBeingTracked[howManyTraysWeAreTracking];
+    newTray = Track();                                   // every field back to its default
+    newTray.id = howManyTraysWeAreTracking + 1;
+    newTray.est_pos_mm = layout::DISP[dispenserIndex].pos_mm;
+    howManyTraysWeAreTracking = howManyTraysWeAreTracking + 1;
+
+    host_log("evt", "now tracking a new tray");
+    return &newTray;
+}
+
+static void holdTrayHereAndStartDispensing(Track& tray, int dispenserIndex, unsigned clockMs) {
+    tray.status = Held;
+    tray.hold = dispenserIndex;
+    tray.phase_until = clockMs + HOW_LONG_TO_RUN_A_DISPENSER_MS;
+}
+
+static void lookForTraysArrivingAtDispensers(unsigned clockMs) {
+    for (int dispenserIndex = 0; dispenserIndex < layout::N_DISP; dispenserIndex++) {
+        bool sensorSeesTrayNow   = sensorReadings.sense[dispenserIndex];
+        bool sensorSawTrayBefore = trayWasAtDispenserLastUpdate[dispenserIndex];
+        bool trayJustArrived     = sensorSeesTrayNow && !sensorSawTrayBefore;
+
+        if (trayJustArrived) {
+            float dispenserPositionMm = layout::DISP[dispenserIndex].pos_mm;
+            Track* tray = findTrayWeThinkIsNear(dispenserPositionMm);
+
+            bool isTheFirstDispenser = dispenserIndex == 0;
+            if (tray == nullptr && isTheFirstDispenser) {
+                tray = startTrackingANewTray(dispenserIndex);
+            }
+
+            if (tray != nullptr) {
+                float howWrongOurGuessWasMm = dispenserPositionMm - tray->est_pos_mm;
+                WATCH("drift_mm", howWrongOurGuessWasMm);
+
+                // The sensor is the truth, so throw the guess away and use its position.
+                tray->est_pos_mm = dispenserPositionMm;
+
+                bool thisDispenserIsNextForThisTray = tray->stage == layout::DISP[dispenserIndex].stage;
+                if (thisDispenserIsNextForThisTray) {
+                    holdTrayHereAndStartDispensing(*tray, dispenserIndex, clockMs);
+                }
+            }
+        }
+
+        trayWasAtDispenserLastUpdate[dispenserIndex] = sensorSeesTrayNow;
+    }
+}
+
+// A dispenser must run for a while before an ingredient actually falls, so hold the
+// tray still until enough time has gone by.
+static void keepDispensingUntilEnoughTimeHasPassed(unsigned clockMs) {
+    for (int i = 0; i < howManyTraysWeAreTracking; i++) {
+        Track& tray = traysBeingTracked[i];
+        if (tray.status != Held) continue;
+
+        int dispenserIndex = tray.hold;
+        commandsToTheMachine.gate_open[dispenserIndex] = false;   // hold the tray here
+        commandsToTheMachine.dispense[dispenserIndex] = true;     // keep the chute running
+
+        bool dispenserHasRunLongEnough = clockMs >= tray.phase_until;
+        if (dispenserHasRunLongEnough) {
+            // BREAKPOINT() stops the debugger exactly here, which is a good place to
+            // look at what this tray now believes it is carrying. Move it anywhere.
+            BREAKPOINT();
+
+            // This controller never checks whether anything really fell. It simply
+            // believes the dispenser worked -- which is exactly what goes wrong when a
+            // dispenser misfires. Try the "Fail g1" fault button and watch.
+            tray.placed[dispenserIndex] = 1;
+            tray.stage = layout::DISP[dispenserIndex].stage + 1;
+            tray.status = Moving;
+            tray.hold = -1;
+        }
+    }
+}
+
+static void toastAnyTrayThatReachedTheTunnel(unsigned clockMs) {
+    bool trayArrivedAtTunnel = layout::HAS_TUNNEL && sensorReadings.tunnel_entry;
+    if (trayArrivedAtTunnel) {
+        Track* tray = findTrayWeThinkIsNear(layout::TUNNEL_ENTRY_MM);
+        bool trayIsReadyToToast = tray != nullptr
+                               && tray->status == Moving
+                               && tray->stage == layout::TUNNEL_STAGE;
+        if (trayIsReadyToToast) {
+            tray->status = Toasting;
+            tray->phase_until = clockMs + HOW_LONG_TO_TOAST_MS;
+        }
+    }
+
+    bool someTrayIsStillToasting = false;
+    for (int i = 0; i < howManyTraysWeAreTracking; i++) {
+        Track& tray = traysBeingTracked[i];
+        if (tray.status != Toasting) continue;
+
+        bool toastingHasFinished = clockMs >= tray.phase_until;
+        if (toastingHasFinished) {
+            tray.stage = layout::TUNNEL_STAGE + 1;
+            tray.status = Moving;
+        } else {
+            someTrayIsStillToasting = true;
+        }
+    }
+
+    // Closing the tunnel gate keeps a tray inside long enough to actually toast.
+    commandsToTheMachine.heater = someTrayIsStillToasting;
+    commandsToTheMachine.tunnel_gate_open = !someTrayIsStillToasting;
+}
+
+static void markTraysThatFinishedEveryStep() {
+    for (int i = 0; i < howManyTraysWeAreTracking; i++) {
+        Track& tray = traysBeingTracked[i];
+        bool trayHasDoneEveryStep = tray.stage >= layout::N_STAGES;
+        if (tray.status == Moving && trayHasDoneEveryStep) {
+            tray.status = Done;
+            host_log("evt", "a s'more is finished");
+        }
+    }
+}
+
+// Everything below lets the app read and write the memory above: it hands over the
+// addresses of your inputs, outputs and trays. You should not need to change it.
 extern "C" {
-Inputs*      inputs_ptr()   { return &g_in; }
-Outputs*     outputs_ptr()  { return &g_out; }
-// Hand the UI the ADDRESS of your state; it decodes it with the generated layout.
-int          track_count()  { return g_n; }
-const Track* tracks_ptr()   { return g_tr; }
+
+Inputs*      inputs_ptr()   { return &sensorReadings; }
+Outputs*     outputs_ptr()  { return &commandsToTheMachine; }
+int          track_count()  { return howManyTraysWeAreTracking; }
+const Track* tracks_ptr()   { return traysBeingTracked; }
 int          track_stride() { return (int)sizeof(Track); }
 
-void tick() {
-    unsigned now = g_in.now_ms;
-    float dt = g_have ? (now - g_lastNow) / 1000.0f : 0.0f; if (dt < 0 || dt > 0.5f) dt = 0; g_lastNow = now; g_have = true;
-    g_out.belt_speed = g_in.run ? layout::NOMINAL_SPEED : 0.f;
-    for (int k = 0; k < layout::N_DISP; k++) { g_out.gate_open[k] = true; g_out.dispense[k] = false; }
-    g_out.tunnel_gate_open = true; g_out.heater = false;
+// The app calls this many times a second. One call = one decision about what every
+// motor and gate should be doing right now.
+void runOneControlCycle() {
+    unsigned clockMs = sensorReadings.now_ms;
 
-    for (int i = 0; i < g_n; i++) if (g_tr[i].status == Moving) g_tr[i].est_pos_mm += g_out.belt_speed * dt;  // dead-reckon
-
-    for (int k = 0; k < layout::N_DISP; k++) {                          // sensor rising edge -> snap + hold
-        bool rise = g_in.sense[k] && !g_last[k];
-        if (rise) {
-            Track* t = nearest(layout::DISP[k].pos_mm);
-            if (!t && k == 0 && g_n < 8) { Track& nt = g_tr[g_n++]; nt = Track(); nt.id = g_n;
-                nt.est_pos_mm = layout::DISP[0].pos_mm; t = &nt; }
-            // publish the dead-reckoning error this sensor just corrected — a local,
-            // so only WATCH can show it (see the Watch panel / debugger)
-            if (t) { WATCH("drift_mm", layout::DISP[k].pos_mm - t->est_pos_mm);
-                     t->est_pos_mm = layout::DISP[k].pos_mm;
-                if (t->stage == layout::DISP[k].stage) { t->status = Held; t->hold = k; t->phase_until = now + 650; } }
-        }
-        g_last[k] = g_in.sense[k];
+    float secondsSinceLastUpdate = 0.0f;
+    if (haveReadTheClockBefore) {
+        secondsSinceLastUpdate = (clockMs - clockAtPreviousUpdateMs) / 1000.0f;
     }
-    for (int i = 0; i < g_n; i++) { Track& t = g_tr[i];                 // service holds (OPEN-LOOP: assume placed)
-        if (t.status == Held) { int k = t.hold; g_out.gate_open[k] = false; g_out.dispense[k] = true;
-            if (now >= t.phase_until) { t.placed[k] = 1; t.stage = layout::DISP[k].stage + 1; t.status = Moving; t.hold = -1; } } }
+    bool theClockJumpedOddly = secondsSinceLastUpdate < 0.0f || secondsSinceLastUpdate > 0.5f;
+    if (theClockJumpedOddly) secondsSinceLastUpdate = 0.0f;
+    clockAtPreviousUpdateMs = clockMs;
+    haveReadTheClockBefore = true;
 
-    if (layout::HAS_TUNNEL && g_in.tunnel_entry) { Track* t = nearest(layout::TUNNEL_ENTRY_MM);   // toast in the tunnel
-        if (t && t->stage == layout::TUNNEL_STAGE && t->status == Moving) { t->status = Toasting; t->phase_until = now + 3800; } }
-    bool toasting = false;
-    for (int i = 0; i < g_n; i++) { if (g_tr[i].status == Toasting) {
-        if (now >= g_tr[i].phase_until) { g_tr[i].stage = layout::TUNNEL_STAGE + 1; g_tr[i].status = Moving; } else toasting = true; } }
-    g_out.heater = toasting; g_out.tunnel_gate_open = !toasting;
+    // Start from a safe machine: belt at its normal speed, every gate open, nothing
+    // dispensing, heater off. The code below only has to say what should differ.
+    commandsToTheMachine.belt_speed = sensorReadings.run ? layout::NOMINAL_SPEED : 0.0f;
+    for (int dispenserIndex = 0; dispenserIndex < layout::N_DISP; dispenserIndex++) {
+        commandsToTheMachine.gate_open[dispenserIndex] = true;
+        commandsToTheMachine.dispense[dispenserIndex] = false;
+    }
+    commandsToTheMachine.tunnel_gate_open = true;
+    commandsToTheMachine.heater = false;
 
-    for (int i = 0; i < g_n; i++) if (g_tr[i].status == Moving && g_tr[i].stage >= layout::N_STAGES) {   // complete
-        g_tr[i].status = Done; host_log("evt", "s'more complete"); }
+    moveOurGuessForwardForEachTray(secondsSinceLastUpdate);
+    lookForTraysArrivingAtDispensers(clockMs);
+    keepDispensingUntilEnoughTimeHasPassed(clockMs);
+    toastAnyTrayThatReachedTheTunnel(clockMs);
+    markTraysThatFinishedEveryStep();
 }
+
 } // extern "C"
 </script>
 
@@ -1426,22 +1844,71 @@ void tick() {
   // ---- run a student controller as a lane backend ----
   // `io` is the layout-aware API the scripted controller writes against (ER-1/2):
   // it reads sensors, sets actuators, and returns its own tray tracks to render.
+  // The `machine` object a student controller receives. Every name here is meant to
+  // be readable out loud: questions start with `is`/`count`, commands start with a
+  // verb, and measurements say their units.
   function makeIO(w, o, inp, mem){
     return {
-      nowMs: inp.t, dt: STEP, run: inp.run, nominal: NOMINAL_SPEED, beltCmd: mem.__beltCmd||0,
-      nStages: LAYOUT.nStages, tunnelStage: LAYOUT.tunnelStage,
-      dispensers: STATIONS.map((s,i)=>({ index:i, id:s.id, ingredient:s.ingredient, pos:s.pos, servos:s.servos, stage:s.stage, afterTunnel:s.after_tunnel, isCap:s.is_cap })),
-      tunnel: TUNNEL ? { entry:TUNNEL.entry, exit:TUNNEL.exit } : null,
-      sense:i=>!!inp.sense[i], confirm:i=>inp.confirm[i]|0,
-      tunnelEntry:()=>!!inp.tunnel_entry, tunnelExit:()=>!!inp.tunnel_exit, temp:()=>inp.tunnel_temp,
-      belt:v=>{ o.belt=+v||0; }, gate:(i,open)=>{ o.gate[i]=!!open; }, dispense:(i,on)=>{ o.dispense[i]=!!on; },
-      tunnelGate:open=>{ o.tunnelGateOpen=!!open; }, heater:on=>{ o.heater=!!on; },
-      log:(m,k)=>log(inp.t, String(m), k||"evt"),
-      watch:(n,v)=>noteWatch(String(n), Number(v)),   // same telemetry as C++ WATCH()
+      // --- what time it is, and whether the operator has the line switched on ---
+      clockMs: inp.t,
+      secondsSinceLastUpdate: STEP,
+      isRunning: inp.run,
+
+      // --- facts about this particular machine, from its layout ---
+      normalBeltSpeedMmPerSecond: NOMINAL_SPEED,
+      beltSpeedCommandedLastUpdate: mem.__beltCmd || 0,
+      stepsNeededToFinishASmore: LAYOUT.nStages,
+      stepNumberForToasting: LAYOUT.tunnelStage,
+      dispensers: STATIONS.map((station, index) => ({
+        index,
+        name: station.id,
+        ingredient: station.ingredient,
+        positionMm: station.pos,
+        stepNumber: station.stage,
+        servoCount: station.servos,
+        isTopCap: station.is_cap,
+      })),
+      tunnel: TUNNEL ? { entrancePositionMm: TUNNEL.entry, exitPositionMm: TUNNEL.exit } : null,
+
+      // --- questions you can ask the sensors ---
+      isTrayAtDispenser: index => !!inp.sense[index],
+      countIngredientsDropped: index => inp.confirm[index] | 0,
+      isTrayAtTunnelEntrance: () => !!inp.tunnel_entry,
+      isTrayAtTunnelExit: () => !!inp.tunnel_exit,
+      tunnelTemperatureCelsius: () => inp.tunnel_temp,
+
+      // --- commands you can give the machine ---
+      setBeltSpeed: mmPerSecond => { o.belt = +mmPerSecond || 0; },
+      openGate:  index => { o.gate[index] = true;  },
+      closeGate: index => { o.gate[index] = false; },
+      startDispensing: index => { o.dispense[index] = true;  },
+      stopDispensing:  index => { o.dispense[index] = false; },
+      openTunnelGate:  () => { o.tunnelGateOpen = true;  },
+      closeTunnelGate: () => { o.tunnelGateOpen = false; },
+      turnHeaterOn:  () => { o.heater = true;  },
+      turnHeaterOff: () => { o.heater = false; },
+
+      // --- explain yourself: log writes a sentence, watch shows a live number ---
+      log: (message, kind) => log(inp.t, String(message), kind || "evt"),
+      watch: (name, value) => noteWatch(String(name), Number(value)),
     };
   }
   const _statusName = s => (["moving","held","toasting","done","lost"].includes(s) ? s : "moving");
-  function normTrack(t){ return { id:t.id|0, estPos:+t.estPos||0, stage:t.stage|0, status:_statusName(t.status), placed:Array.isArray(t.placed)?t.placed.map(x=>x|0):Array(N_DISP).fill(0) }; }
+  // Student controllers may name their fields readably (guessedPositionMm,
+  // stepsFinished, ingredientsWeBelieveWePlaced) or use the short contract names.
+  // Accept either, so the visualizer never silently draws zeros.
+  const firstDefined = (...values) => values.find(v => v !== undefined && v !== null);
+  function normTrack(t){
+    const placed = firstDefined(t.ingredientsWeBelieveWePlaced, t.ingredients_placed, t.placed);
+    return {
+      id: t.id|0,
+      estPos: +firstDefined(t.guessedPositionMm, t.guessed_position_mm, t.estPos, 0) || 0,
+      stage: firstDefined(t.stepsFinished, t.steps_finished, t.stage, 0)|0,
+      status: _statusName(t.status),
+      placed: Array.isArray(placed) ? placed.map(x=>x|0) : Array(N_DISP).fill(0),
+    };
+  }
+  const traysHeldInMemory = memory => (memory && (memory.traysBeingTracked || memory.trays_being_tracked || memory.tracks)) || [];
   function jsDrive(e, inp){
     const o=e.ctrl.out;
     e.mem.__beltCmd = o.belt;                         // last commanded belt (for dead-reckoning)
@@ -1450,7 +1917,7 @@ void tick() {
     let tracks;
     try { tracks = e.controller(io, e.mem); }
     catch(err){ studioStatus("runtime error at t="+(inp.t/1000).toFixed(2)+"s: "+err.message, "err"); sim.playing=false; throw err; }
-    e.ctrl.tracks = (Array.isArray(tracks)?tracks:(e.mem.tracks||[])).map(normTrack);
+    e.ctrl.tracks = (Array.isArray(tracks)?tracks:traysHeldInMemory(e.mem)).map(normTrack);
   }
   function makeJsEngine(){
     const e = {
@@ -1468,9 +1935,9 @@ void tick() {
     const src = STUDIO.editor ? STUDIO.editor.getValue() : STARTER("js");
     if (STUDIO.lang==="python") throw new Error("the Python runtime is the next step — use the JavaScript tab for now");
     if (STUDIO.lang==="cpp")    throw new Error("C++ runs via in-browser compile (a later step) — use the JavaScript tab for now");
-    const factory = new Function(src + "\n;return { tick:(typeof tick!=='undefined')?tick:null, requires:(typeof requires!=='undefined')?requires:null };");
+    const factory = new Function(src + "\n;return { entry:(typeof runOneControlCycle!=='undefined')?runOneControlCycle:((typeof tick!=='undefined')?tick:null), requires:(typeof thisControllerNeeds!=='undefined')?thisControllerNeeds:((typeof requires!=='undefined')?requires:null) };");
     const mod = factory();
-    if (typeof mod.tick !== "function") throw new Error("no `function tick(io, mem)` defined");
+    if (typeof mod.entry !== "function") throw new Error("this file needs a `function runOneControlCycle(machine, memory)`");
     return mod;
   }
   async function studioLoad(){
@@ -1478,7 +1945,7 @@ void tick() {
     try {
       if (STUDIO.lang==="python")   STUDIO.compiled = await studioCompilePython();
       else if (STUDIO.lang==="cpp") STUDIO.cppModule = await cppCompile();
-      else                          STUDIO.compiled = studioCompile().tick;
+      else                          STUDIO.compiled = studioCompile().entry;
       reset(); injectTray(); renderAll();          // reset() builds the studio lane
       const label = {js:"JavaScript", python:"Python", cpp:"C++"}[STUDIO.lang];
       studioStatus("running your "+label+" controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
@@ -1499,20 +1966,40 @@ void tick() {
     DBG.trace.push({ line, mem: JSON.parse(JSON.stringify(DBG.engine.mem)), watch: {...WATCHES},
       out: { belt:o.belt, gate:o.gate.slice(), dispense:o.dispense.slice(), heater:o.heater, tunnelGateOpen:o.tunnelGateOpen } });
   }
+  // Insert a trace call at the START OF EACH STATEMENT. It must never land in the
+  // middle of a statement that wraps across lines — doing so would silently cut the
+  // statement in two (`const x =` / `__trace(); value;` leaves x undefined). So we
+  // only inject when the previous meaningful line actually ENDED a statement.
+  function statementEndsHere(codeOnly){
+    if (/^[}\])]/.test(codeOnly)) return true;        // a closing line ends whatever it closed
+    if (/[;}]$/.test(codeOnly))    return true;        // a finished statement or block
+    if (/\{$/.test(codeOnly)) {
+      // A trailing `{` opens a BLOCK (if/for/function) — safe to trace inside — unless
+      // it opens a value, e.g. `const tray = {` or `.map(x => ({`, whose contents are
+      // object properties and cannot hold a statement.
+      return !/[=:(,]\s*\{$/.test(codeOnly);
+    }
+    return false;                                      // anything else is a continuation
+  }
   function instrumentForTrace(src){
+    let atStatementStart = true;
     return src.split("\n").map((raw,i)=>{
-      const t = raw.replace(/\/\/.*$/,"").trim();
-      const skip = t==="" || raw.trim().startsWith("//") || /^[}\])]/.test(t) || /^(else|case|default)\b/.test(t) || /[,+\-*/%&|=?:.(<>]$/.test(t);
-      return skip ? raw : raw.replace(/^(\s*)/, `$1__trace(${i+1});`);
+      const codeOnly = raw.replace(/\/\/.*$/,"").trim();
+      const isBlank = codeOnly === "";
+      const continuesABlock = /^[}\])]/.test(codeOnly) || /^(else|case|default|catch|finally)\b/.test(codeOnly);
+      const canInject = atStatementStart && !isBlank && !continuesABlock;
+      const out = canInject ? raw.replace(/^(\s*)/, `$1__trace(${i+1});`) : raw;
+      if (!isBlank) atStatementStart = statementEndsHere(codeOnly);
+      return out;
     }).join("\n");
   }
   function studioCompileTraced(){
     if (STUDIO.lang!=="js") throw new Error("step-debugging is wired for JavaScript first (Python next)");
     const instr = instrumentForTrace(STUDIO.editor.getValue());
-    const factory = new Function("__trace", instr + "\n;return { tick:(typeof tick!=='undefined')?tick:null };");
+    const factory = new Function("__trace", instr + "\n;return { entry:(typeof runOneControlCycle!=='undefined')?runOneControlCycle:((typeof tick!=='undefined')?tick:null) };");
     const mod = factory(dbgTrace);
-    if (typeof mod.tick !== "function") throw new Error("no `function tick(io, mem)` defined");
-    return mod.tick;
+    if (typeof mod.entry !== "function") throw new Error("this file needs a `function runOneControlCycle(machine, memory)`");
+    return mod.entry;
   }
   function dbgButtons(on){ $("dbgStepLine").disabled=!on; $("dbgStepTick").disabled=!on; $("dbgStop").disabled=!on; $("dbgBtn").disabled=on; }
   function dbgHighlight(line){
@@ -1524,7 +2011,9 @@ void tick() {
   function renderDbgVars(entry){
     const v=$("dbgVars"); if(!v) return; v.style.display="flex";
     const mem=entry.mem||{}, out=entry.out||{}, inp=DBG.inp;
-    const tracks=(mem.tracks||[]).map(t=>`#${t.id} ${t.status} est=${(t.estPos||0).toFixed(0)} stage=${t.stage} placed=[${(t.placed||[]).join(",")}]`).join("<br>")||"— none yet —";
+    const tracks=traysHeldInMemory(mem).map(normTrack)
+      .map(t=>`#${t.id} ${t.status} guess=${t.estPos.toFixed(0)}mm steps=${t.stage} placed=[${t.placed.join(",")}]`)
+      .join("<br>")||"— none yet —";
     const sens=STATIONS.map((s,i)=>`${s.id}:${inp.sense[i]?1:0}`).join("  ");
     const outs=`belt=${Math.round(out.belt||0)}  gate=[${(out.gate||[]).map(g=>g?1:0).join("")}]  disp=[${(out.dispense||[]).map(d=>d?1:0).join("")}]  heater=${out.heater?1:0}`;
     const w = entry.watch||{}, wk = Object.keys(w);
@@ -1552,7 +2041,7 @@ void tick() {
     try { tracks = e.controller(io, e.mem); }
     catch(err){ DBG.collecting=false; studioStatus("runtime error: "+err.message, "err"); dbgStop(); return; }
     DBG.collecting=false;
-    e.ctrl.tracks = (Array.isArray(tracks)?tracks:(e.mem.tracks||[])).map(normTrack);
+    e.ctrl.tracks = (Array.isArray(tracks)?tracks:traysHeldInMemory(e.mem)).map(normTrack);
     DBG.pos=0; dbgShow();
   }
   function dbgFinishTick(){
@@ -1597,8 +2086,9 @@ void tick() {
     const py = await loadPyo();
     py.globals.set("_src", STUDIO.editor.getValue());
     py.runPython("_ns = {}\nexec(_src, _ns)\n_mem = {}");
-    if (!py.runPython("callable(_ns.get('tick'))")) throw new Error("no `def tick(io, mem)` defined");
-    const tickFn = py.runPython("_ns['tick']");      // PyProxy callable
+    py.runPython("_entry = _ns.get('run_one_control_cycle') or _ns.get('tick')");
+    if (!py.runPython("callable(_entry)")) throw new Error("this file needs a `def run_one_control_cycle(machine, memory)`");
+    const tickFn = py.runPython("_entry");
     return (io, _mem)=>{
       const res = tickFn(io, py.globals.get("_mem"));
       let tracks = [];
@@ -1617,12 +2107,12 @@ void tick() {
     py.runPython([
       "_dbg = []",
       "def _tr(frame, event, arg):",
-      "    if event=='line' and frame.f_code.co_name=='tick':",
+      "    if event=='line' and frame.f_code.co_name in ('run_one_control_cycle','tick'):",
       "        try: _dbg.append((frame.f_lineno, copy.deepcopy(dict(_mem))))",
       "        except Exception: _dbg.append((frame.f_lineno, {}))",
       "    return _tr",
       "sys.settrace(_tr)",
-      "try: _ret = _ns['tick'](_io, _mem)",
+      "try: _ret = _entry(_io, _mem)",
       "finally: sys.settrace(None)",
     ].join("\n"));
     const ret = py.globals.get("_ret");
@@ -1652,22 +2142,56 @@ void tick() {
     })();
     return _clangLoading;
   }
-  const HOST_TRACE_DECL = 'extern "C" __attribute__((import_module("env"),import_name("host_trace"))) void host_trace(int);';
-  // insert host_trace(line) before each statement inside void tick(){...} only
+  // Prelude prepended to the student's C++ in the Studio: it declares the trace
+  // callback and switches on WATCH/BREAKPOINT (see smores/Watch.h).
+  const HOST_TRACE_DECL =
+    '#define SMORES_TRACE_ENABLE 1\n' +
+    'extern "C" __attribute__((import_module("env"),import_name("host_trace"))) void host_trace(int);\n';
+
+  // Try to stop on every line of the student's code by inserting host_trace(line)
+  // at each statement start, inside every function body in the file.
+  //
+  // HONEST LIMITATION: doing this correctly for arbitrary C++ needs a real parser.
+  // This is a line-based approximation that handles the shapes beginner controllers
+  // use — function bodies, if/for/while blocks, wrapped statements, and brace
+  // initialisers. It deliberately refuses to touch anything it isn't sure about
+  // (type definitions, preprocessor lines, initialiser contents). When it can't
+  // reach somewhere you care about, put a BREAKPOINT() there yourself — that always
+  // works, because it is your code rather than our guess.
   function cppInstrumentTick(src){
-    const m = src.indexOf("void tick()"); if (m<0) return src;
-    let i = src.indexOf("{", m); if (i<0) return src;
-    let depth=0, end=-1;
-    for (let j=i;j<src.length;j++){ const c=src[j]; if(c==='{')depth++; else if(c==='}'){ if(--depth===0){ end=j; break; } } }
-    if (end<0) return src;
-    const preLines = src.slice(0,i+1).split("\n").length;
-    const body = src.slice(i+1,end).split("\n").map((raw,k)=>{
-      const line = preLines + k, t = raw.replace(/\/\/.*$/,"").trim();
-      const skip = t==="" || raw.trim().startsWith("//") || /^[}\])]/.test(t) || /^(else|case|default)\b/.test(t) || /[,+\-*/%&|=?:.(<>]$/.test(t);
-      return skip ? raw : raw.replace(/^(\s*)/, `$1host_trace(${line});`);
-    }).join("\n");
-    return src.slice(0,i+1) + body + src.slice(end);
+    const lines = src.split("\n");
+    // One entry per open brace, remembering what kind of thing it opened.
+    const openBraces = [];
+    let atStatementStart = false;      // false at file scope: globals aren't statements
+    const out = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const codeOnly = raw.replace(/\/\/.*$/, "").trim();
+      const isBlank = codeOnly === "";
+      const isPreprocessor = codeOnly.startsWith("#");
+      const insideCodeBlock = openBraces.length > 0 && openBraces[openBraces.length - 1] === "code";
+      const continuesABlock = /^[}\])]/.test(codeOnly) || /^(else|case|default|catch)\b/.test(codeOnly);
+
+      const safeToInsert = insideCodeBlock && atStatementStart && !isBlank && !isPreprocessor && !continuesABlock;
+      out.push(safeToInsert ? raw.replace(/^(\s*)/, `$1host_trace(${i + 1});`) : raw);
+
+      if (isBlank || isPreprocessor) continue;
+
+      // Track the braces this line opens or closes, and what each one is.
+      // `struct`/`class`/`namespace`/`extern "C"` open scopes that hold DECLARATIONS,
+      // not statements — putting a function call in them is a syntax error.
+      const opensADeclarationScope = /\b(struct|class|enum|union|namespace|extern)\b/.test(codeOnly);
+      const opensAValue  = /[=:(,]\s*\{$/.test(codeOnly);
+      for (const ch of codeOnly) {
+        if (ch === "{") openBraces.push(opensADeclarationScope ? "declarations" : opensAValue ? "value" : "code");
+        else if (ch === "}") openBraces.pop();
+      }
+      atStatementStart = statementEndsHere(codeOnly);
+    }
+    return out.join("\n");
   }
+
   async function cppCompile(){
     const api = await loadClang(); _clangLog = "";
     // If the student edited layout.json and pressed Apply, compile against the
@@ -1687,12 +2211,22 @@ void tick() {
     api.memfs.addFile("Watch.h", STUDIO.watchHdr);
     const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(STUDIO.editor.getValue());
     studioStatus("compiling your C++ with clang → WebAssembly (in the browser)…");
-    await api.compile({ input:"ctrl.cc", contents:src, obj:"ctrl.o" });
+    // clang reports problems by exiting non-zero; without this the student would only
+    // ever see "process exited with code 1", which explains nothing.
+    const reportClangProblems = (what) => {
+      const plain = _clangLog.replace(/\x1b\[[0-9;]*m/g, "").trim();
+      const complaints = plain.split("\n").filter(line => /(error|warning):/i.test(line));
+      const detail = complaints.length ? complaints.slice(0, 12).join("\n") : plain.slice(-900);
+      return new Error(`${what}:\n${detail}`);
+    };
+    try { await api.compile({ input:"ctrl.cc", contents:src, obj:"ctrl.o" }); }
+    catch(e){ throw reportClangProblems("your C++ did not compile"); }
     const lld = await api.getModule(api.lldFilename);
-    await api.run(lld, "wasm-ld","--no-threads","--no-entry","--allow-undefined",
-      "--export=tick","--export=inputs_ptr","--export=outputs_ptr",
+    try { await api.run(lld, "wasm-ld","--no-threads","--no-entry","--allow-undefined",
+      "--export=runOneControlCycle","--export=tick","--export=inputs_ptr","--export=outputs_ptr",
       "--export=track_count","--export=tracks_ptr","--export=track_stride","--export=__wasm_call_ctors",
-      "-z","stack-size=1048576","-Llib/wasm32-wasi","ctrl.o","-lc","-o","ctrl.wasm");
+      "-z","stack-size=1048576","-Llib/wasm32-wasi","ctrl.o","-lc","-o","ctrl.wasm"); }
+    catch(e){ throw reportClangProblems("your C++ compiled but could not be linked"); }
     let bytes; try { bytes = api.memfs.getFileContents("ctrl.wasm"); } catch(e){ bytes=null; }
     if (!bytes || !bytes.length) throw new Error("compile/link failed:\n"+_clangLog.replace(/\x1b\[[0-9;]*m/g,"").slice(-600));
     return WebAssembly.compile(bytes);
@@ -1713,7 +2247,8 @@ void tick() {
     });
     if (inst.exports.__wasm_call_ctors) inst.exports.__wasm_call_ctors();
     e.wasm = { inst, inPtr: inst.exports.inputs_ptr(), outPtr: inst.exports.outputs_ptr() };
-    e.drive = (inp)=>{ writeInputs(e.wasm, inp); inst.exports.tick(); readCtrl(e); };
+    const runCycle = inst.exports.runOneControlCycle || inst.exports.tick;
+    e.drive = (inp)=>{ writeInputs(e.wasm, inp); runCycle(); readCtrl(e); };
     return e;
   }
   // host_trace records (line, live tracks + outputs read back from wasm memory)
@@ -1730,7 +2265,8 @@ void tick() {
     DBG.inp = senseInputs(e.world);
     writeInputs(e.wasm, DBG.inp);
     DBG.trace=[]; DBG.collecting=true;
-    e.wasm.inst.exports.tick();      // host_trace fires per line, recording state
+    const runCycle = e.wasm.inst.exports.runOneControlCycle || e.wasm.inst.exports.tick;
+    runCycle();                      // host_trace fires per line, recording state
     DBG.collecting=false;
     readCtrl(e);
     DBG.pos=0; dbgShow();

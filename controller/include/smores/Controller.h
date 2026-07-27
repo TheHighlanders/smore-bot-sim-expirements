@@ -1,5 +1,6 @@
 // Controller.h — the one stateful piece (the part we compile to WASM + visualize).
-// Reads inputs via subsystems, tracks trays by dead-reckoning, runs the per-tray
+// Reads the sensors through the subsystems, keeps track of where it believes each
+// tray is (by adding up how far the belt should have carried it), runs the per-tray
 // state machine, and writes outputs via subsystems. Two variants (open/closed).
 //
 // This is a faithful SKELETON ported from the verified JS mockup; the real
@@ -13,9 +14,9 @@ namespace smores {
 
 enum Mode { OpenLoop, ClosedLoop };
 
-// `Status` and `Track` are GENERATED (generated/State.h) so their memory layout is
-// described by the same descriptor the visualizer decodes with — no hand-written
-// per-field accessors, and no drift as the layout's dispenser count changes.
+// `Status` and `Track` are GENERATED from the layout (generated/State.h). Because the
+// app is told exactly how those fields are laid out in memory, it can read every one
+// of them without us writing any methods to hand them over one at a time.
 
 // Geometry (positions, tunnel, belt, speed) comes from the generated layout
 // (layout::*). Config is controller POLICY only. Mechanical dwells (how long a dispenser must run, how

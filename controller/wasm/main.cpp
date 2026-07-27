@@ -30,23 +30,18 @@ __attribute__((export_name("init"))) void init(int mode) {
 }
 __attribute__((export_name("tick"))) void tick() { if (g_ctrl) g_ctrl->update(); }
 
-// Minimal exposed controller state for the visualizer overlay.
+// Exposed controller state for the visualizer/debugger. Instead of a hand-written
+// per-field accessor, we hand out the ADDRESS of the live Track array: the JS side
+// decodes it with the generated descriptor (offsets.track), so every field is
+// visible and nothing drifts when the layout changes. HAL.md §H-8.1.
 __attribute__((export_name("track_count"))) int track_count() {
     return g_ctrl ? (int)g_ctrl->tracks().size() : 0;
 }
-// field: 0=id, 1=est_pos_mm, 2=stage, 3=status, 4..(4+N_DISP-1)=placed[0..N_DISP-1]
-__attribute__((export_name("track_field"))) float track_field(int i, int field) {
-    if (!g_ctrl || i < 0 || i >= (int)g_ctrl->tracks().size()) return 0.f;
-    const Track& t = g_ctrl->tracks()[i];
-    switch (field) {
-        case 0: return (float)t.id;
-        case 1: return t.est_pos_mm;
-        case 2: return (float)t.stage;
-        case 3: return (float)t.status;
-        default:
-            if (field >= 4 && field < 4 + layout::N_DISP) return (float)t.placed[field - 4];
-            return 0.f;
-    }
+// Base address of tracks[0]. Re-read every tick: the backing store may move.
+__attribute__((export_name("tracks_ptr"))) const Track* tracks_ptr() {
+    return (g_ctrl && !g_ctrl->tracks().empty()) ? g_ctrl->tracks().data() : nullptr;
 }
+// Element stride, so JS never assumes a packing rule.
+__attribute__((export_name("track_stride"))) int track_stride() { return (int)sizeof(Track); }
 
 } // extern "C"

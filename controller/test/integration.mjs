@@ -59,7 +59,26 @@ function readOutputs() {
     heater: "heater" in outOff ? !!d.getUint8(outPtr + outOff.heater) : false,
   };
 }
-const trackField = (i, f) => ex.track_field(i, f);   // 3=status(Done=3), 4+=placed[k]
+// Decode the controller's Track array generically, from the GENERATED descriptor
+// (no hand-written accessors — HAL.md §H-8.1). Re-read the base pointer each call:
+// the backing store can move.
+const TOFF = Object.fromEntries(M.offsets.track.fields.map(f => [f.name, f.offset]));
+function readTracks() {
+  const n = ex.track_count(); if (!n) return [];
+  const base = ex.tracks_ptr(), stride = ex.track_stride(), d = dv(), out = [];
+  for (let i = 0; i < n; i++) {
+    const p = base + i * stride;
+    out.push({
+      id: d.getInt32(p + TOFF.id, true),
+      est_pos_mm: d.getFloat32(p + TOFF.est_pos_mm, true),
+      stage: d.getInt32(p + TOFF.stage, true),
+      status: d.getInt32(p + TOFF.status, true),
+      retries: d.getInt32(p + TOFF.retries, true),
+      placed: Array.from({ length: N }, (_, k) => d.getInt32(p + TOFF.placed + 4 * k, true)),
+    });
+  }
+  return out;
+}
 
 // ---- generic JS world derived from the layout meta ----
 function makeWorld(flakyDisp /* dispenser index that misfires its 1st attempt, or -1 */) {
@@ -116,10 +135,14 @@ function run(mode, flakyDisp) {
     w.out = readOutputs();
     w.step(dt);
   }
-  const n = ex.track_count();
-  const status = n > 0 ? trackField(0, 3) : -1;          // 3 = Done
-  const believed = Array.from({ length: N }, (_, k) => n > 0 ? trackField(0, 4 + k) : -1);
-  return { counts: w.counts, status, believed, tracks: n };
+  const tracks = readTracks();
+  const t0 = tracks[0];
+  return {
+    counts: w.counts,
+    status: t0 ? t0.status : -1,                 // 3 = Done
+    believed: t0 ? t0.placed : Array(N).fill(-1),
+    tracks: tracks.length,
+  };
 }
 
 // ---- assertions ----

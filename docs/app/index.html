@@ -378,6 +378,7 @@ def tick(io, mem):
 // host_trace are provided by the runtime; host_trace lets 🐞 Debug step this
 // file line by line. Freestanding (no std::), so it links against just libc.
 #include "Contract.h"        // generated from the active layout (pulls in Layout.h)
+#include "State.h"           // generated: enum Status + struct Track  <- your state
 using namespace smores;
 
 extern "C" __attribute__((import_module("env"), import_name("host_log")))
@@ -386,28 +387,30 @@ void host_log(const char* kind, const char* msg);
 static Inputs  g_in;         // the visualizer writes sensors here each tick
 static Outputs g_out;        // ...reads your actuator commands from here
 
-// Your tray tracking (the controller's BELIEF). status: 0=moving 1=held 2=toasting 3=done.
-struct Track { int id; float est; int stage; int status; int hold; unsigned until; int placed[layout::N_DISP]; };
-static Track g_tr[8]; static int g_n = 0;
-static bool  g_last[layout::N_DISP];
+// Your tray tracking (the controller's BELIEF, never the world's truth). `Track`
+// is GENERATED, so the debugger can already see every field of it — you don't
+// write any accessors. Fields: id, est_pos_mm, stage, status, hold, phase_until,
+// placed[], retries.
+static Track    g_tr[8]; static int g_n = 0;
+static bool     g_last[layout::N_DISP];
 static unsigned g_lastNow = 0; static bool g_have = false;
 
 static Track* nearest(float pos) {
     Track* b = nullptr; float bd = 1e9f;
     for (int i = 0; i < g_n; i++) { Track& t = g_tr[i];
-        if (t.status == 3) continue;
-        float d = t.est - pos; if (d < 0) d = -d;
+        if (t.status == Done) continue;
+        float d = t.est_pos_mm - pos; if (d < 0) d = -d;
         if (d < bd && d < 120.f) { bd = d; b = &t; } }
     return b;
 }
 
 extern "C" {
-Inputs*  inputs_ptr()  { return &g_in; }
-Outputs* outputs_ptr() { return &g_out; }
-int      track_count() { return g_n; }
-float    track_field(int i, int f) { if (i < 0 || i >= g_n) return 0.f; Track& t = g_tr[i];
-    switch (f) { case 0: return t.id; case 1: return t.est; case 2: return t.stage; case 3: return t.status;
-        default: return (f >= 4 && f < 4 + layout::N_DISP) ? t.placed[f-4] : 0.f; } }
+Inputs*      inputs_ptr()   { return &g_in; }
+Outputs*     outputs_ptr()  { return &g_out; }
+// Hand the UI the ADDRESS of your state; it decodes it with the generated layout.
+int          track_count()  { return g_n; }
+const Track* tracks_ptr()   { return g_tr; }
+int          track_stride() { return (int)sizeof(Track); }
 
 void tick() {
     unsigned now = g_in.now_ms;
@@ -416,32 +419,32 @@ void tick() {
     for (int k = 0; k < layout::N_DISP; k++) { g_out.gate_open[k] = true; g_out.dispense[k] = false; }
     g_out.tunnel_gate_open = true; g_out.heater = false;
 
-    for (int i = 0; i < g_n; i++) if (g_tr[i].status == 0) g_tr[i].est += g_out.belt_speed * dt;   // dead-reckon
+    for (int i = 0; i < g_n; i++) if (g_tr[i].status == Moving) g_tr[i].est_pos_mm += g_out.belt_speed * dt;  // dead-reckon
 
     for (int k = 0; k < layout::N_DISP; k++) {                          // sensor rising edge -> snap + hold
         bool rise = g_in.sense[k] && !g_last[k];
         if (rise) {
             Track* t = nearest(layout::DISP[k].pos_mm);
-            if (!t && k == 0 && g_n < 8) { Track& nt = g_tr[g_n++]; nt.id = g_n; nt.est = layout::DISP[0].pos_mm;
-                nt.stage = 0; nt.status = 0; nt.hold = -1; for (int j = 0; j < layout::N_DISP; j++) nt.placed[j] = 0; t = &nt; }
-            if (t) { t->est = layout::DISP[k].pos_mm;
-                if (t->stage == layout::DISP[k].stage) { t->status = 1; t->hold = k; t->until = now + 650; } }
+            if (!t && k == 0 && g_n < 8) { Track& nt = g_tr[g_n++]; nt = Track(); nt.id = g_n;
+                nt.est_pos_mm = layout::DISP[0].pos_mm; t = &nt; }
+            if (t) { t->est_pos_mm = layout::DISP[k].pos_mm;
+                if (t->stage == layout::DISP[k].stage) { t->status = Held; t->hold = k; t->phase_until = now + 650; } }
         }
         g_last[k] = g_in.sense[k];
     }
     for (int i = 0; i < g_n; i++) { Track& t = g_tr[i];                 // service holds (OPEN-LOOP: assume placed)
-        if (t.status == 1) { int k = t.hold; g_out.gate_open[k] = false; g_out.dispense[k] = true;
-            if (now >= t.until) { t.placed[k] = 1; t.stage = layout::DISP[k].stage + 1; t.status = 0; t.hold = -1; } } }
+        if (t.status == Held) { int k = t.hold; g_out.gate_open[k] = false; g_out.dispense[k] = true;
+            if (now >= t.phase_until) { t.placed[k] = 1; t.stage = layout::DISP[k].stage + 1; t.status = Moving; t.hold = -1; } } }
 
     if (layout::HAS_TUNNEL && g_in.tunnel_entry) { Track* t = nearest(layout::TUNNEL_ENTRY_MM);   // toast in the tunnel
-        if (t && t->stage == layout::TUNNEL_STAGE && t->status == 0) { t->status = 2; t->until = now + 3800; } }
+        if (t && t->stage == layout::TUNNEL_STAGE && t->status == Moving) { t->status = Toasting; t->phase_until = now + 3800; } }
     bool toasting = false;
-    for (int i = 0; i < g_n; i++) { if (g_tr[i].status == 2) {
-        if (now >= g_tr[i].until) { g_tr[i].stage = layout::TUNNEL_STAGE + 1; g_tr[i].status = 0; } else toasting = true; } }
+    for (int i = 0; i < g_n; i++) { if (g_tr[i].status == Toasting) {
+        if (now >= g_tr[i].phase_until) { g_tr[i].stage = layout::TUNNEL_STAGE + 1; g_tr[i].status = Moving; } else toasting = true; } }
     g_out.heater = toasting; g_out.tunnel_gate_open = !toasting;
 
-    for (int i = 0; i < g_n; i++) if (g_tr[i].status == 0 && g_tr[i].stage >= layout::N_STAGES) {   // complete
-        g_tr[i].status = 3; host_log("evt", "s'more complete"); }
+    for (int i = 0; i < g_n; i++) if (g_tr[i].status == Moving && g_tr[i].stage >= layout::N_STAGES) {   // complete
+        g_tr[i].status = Done; host_log("evt", "s'more complete"); }
 }
 } // extern "C"
 </script>
@@ -596,7 +599,7 @@ void tick() {
   let STATIONS = [];               // dispensers: {id,key,name,pos,color,ingredient,servos,after_tunnel,is_cap}
   let TUNNEL = null;               // {entry,exit} or null
   let BELT_LEN = 1200, NOMINAL_SPEED = 110;
-  let IN_OFF = {}, OUT_OFF = {}, N_DISP = 0;
+  let IN_OFF = {}, OUT_OFF = {}, TRACK_OFF = {}, TRACK_SIZE = 0, STATUS_NAMES = [], N_DISP = 0;
 
   // world params (layout-independent physics)
   const ACTUAL_SLIP = 0.965;      // world moves a bit slower than commanded -> drift
@@ -623,6 +626,9 @@ void tick() {
     BELT_LEN = meta.belt.length_mm; NOMINAL_SPEED = meta.belt.nominal_speed_mm_s;
     IN_OFF  = Object.fromEntries(meta.offsets.inputs.fields.map(f=>[f.name,f.offset]));
     OUT_OFF = Object.fromEntries(meta.offsets.outputs.fields.map(f=>[f.name,f.offset]));
+    TRACK_OFF = Object.fromEntries(meta.offsets.track.fields.map(f=>[f.name,f.offset]));
+    TRACK_SIZE = meta.offsets.track.size;
+    STATUS_NAMES = meta.offsets.statusNames;
     currentLayout = name;
     buildTimelineLanes(); buildIORows(); buildFaultUI();
     const sln=document.getElementById("studioLayoutName"); if(sln) sln.textContent = meta.title || name;
@@ -639,7 +645,31 @@ void tick() {
   // Struct offsets come from the layout meta (IN_OFF/OUT_OFF); arrays are N_DISP
   // long. So the same JS drives a 3- or 4-dispenser line unchanged.
   const _dec = new TextDecoder();
-  const _ST  = ["moving","held","toasting","done","lost"];
+  // Decode the controller's Track array straight out of wasm memory using the
+  // GENERATED descriptor (TRACK_OFF/TRACK_SIZE). No hand-written per-field
+  // accessor on the C++ side, so every field is visible and nothing drifts when
+  // the layout's dispenser count changes. HAL.md §H-8.1.
+  function decodeTracks(inst){
+    const n = inst.exports.track_count ? inst.exports.track_count() : 0;
+    if (!n) return [];
+    const base = inst.exports.tracks_ptr(), stride = inst.exports.track_stride();
+    if (!base) return [];
+    const dv = new DataView(inst.exports.memory.buffer), arr = [];
+    for (let i=0;i<n;i++){
+      const p = base + i*stride;
+      const placed = []; for (let k=0;k<N_DISP;k++) placed.push(dv.getInt32(p+TRACK_OFF.placed+4*k, true));
+      arr.push({
+        id:      dv.getInt32(p+TRACK_OFF.id, true),
+        estPos:  dv.getFloat32(p+TRACK_OFF.est_pos_mm, true),
+        stage:   dv.getInt32(p+TRACK_OFF.stage, true),
+        status:  STATUS_NAMES[dv.getInt32(p+TRACK_OFF.status, true)] || "moving",
+        hold:    dv.getInt32(p+TRACK_OFF.hold, true),
+        retries: dv.getInt32(p+TRACK_OFF.retries, true),
+        placed,
+      });
+    }
+    return arr;
+  }
   function makeWasmCtrl(mode, e){
     let inst;
     const cstr = (p) => { const u = new Uint8Array(inst.exports.memory.buffer); let q = p; while (u[q]) q++; return _dec.decode(u.subarray(p, q)); };
@@ -670,10 +700,7 @@ void tick() {
     for (let k=0;k<N_DISP;k++){ o.gate[k] = !!dv.getUint8(p+OUT_OFF.gate_open+k); o.dispense[k] = !!dv.getUint8(p+OUT_OFF.dispense+k); }
     o.tunnelGateOpen = ("tunnel_gate_open" in OUT_OFF) ? !!dv.getUint8(p+OUT_OFF.tunnel_gate_open) : true;
     o.heater = ("heater" in OUT_OFF) ? !!dv.getUint8(p+OUT_OFF.heater) : false;
-    const n = w.inst.exports.track_count(), f = (i,fl)=>w.inst.exports.track_field(i,fl), arr = [];
-    for (let i=0;i<n;i++){ const placed=[]; for (let k=0;k<N_DISP;k++) placed.push(f(i,4+k)|0);
-      arr.push({ id:f(i,0)|0, estPos:f(i,1), stage:f(i,2)|0, status:_ST[f(i,3)|0]||"moving", placed }); }
-    e.ctrl.tracks = arr;
+    e.ctrl.tracks = decodeTracks(w.inst);
   }
   function makeEngine(mode){
     const e = {
@@ -1458,17 +1485,19 @@ void tick() {
   }
   async function cppCompile(){
     const api = await loadClang(); _clangLog = "";
-    const [L,C] = await Promise.all([
+    const [L,C,S] = await Promise.all([
       (await fetch(`./layouts/${currentLayout}.Layout.h`)).text(),
       (await fetch(`./layouts/${currentLayout}.Contract.h`)).text(),
+      (await fetch(`./layouts/${currentLayout}.State.h`)).text(),
     ]);
-    api.memfs.addFile("Layout.h", L); api.memfs.addFile("Contract.h", C);
+    api.memfs.addFile("Layout.h", L); api.memfs.addFile("Contract.h", C); api.memfs.addFile("State.h", S);
     const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(STUDIO.editor.getValue());
     studioStatus("compiling your C++ with clang → WebAssembly (in the browser)…");
     await api.compile({ input:"ctrl.cc", contents:src, obj:"ctrl.o" });
     const lld = await api.getModule(api.lldFilename);
     await api.run(lld, "wasm-ld","--no-threads","--no-entry","--allow-undefined",
-      "--export=tick","--export=inputs_ptr","--export=outputs_ptr","--export=track_count","--export=track_field","--export=__wasm_call_ctors",
+      "--export=tick","--export=inputs_ptr","--export=outputs_ptr",
+      "--export=track_count","--export=tracks_ptr","--export=track_stride","--export=__wasm_call_ctors",
       "-z","stack-size=1048576","-Llib/wasm32-wasi","ctrl.o","-lc","-o","ctrl.wasm");
     let bytes; try { bytes = api.memfs.getFileContents("ctrl.wasm"); } catch(e){ bytes=null; }
     if (!bytes || !bytes.length) throw new Error("compile/link failed:\n"+_clangLog.replace(/\x1b\[[0-9;]*m/g,"").slice(-600));
@@ -1496,9 +1525,7 @@ void tick() {
   function cppTrace(line){
     if (!DBG.collecting) return;
     const inst = DBG.engine.wasm.inst, dv = new DataView(inst.exports.memory.buffer), p = DBG.engine.wasm.outPtr;
-    const n = inst.exports.track_count(), tr = [];
-    for (let i=0;i<n;i++){ const placed=[]; for(let k=0;k<N_DISP;k++) placed.push(inst.exports.track_field(i,4+k)|0);
-      tr.push({ id:inst.exports.track_field(i,0)|0, estPos:inst.exports.track_field(i,1), stage:inst.exports.track_field(i,2)|0, status:_ST[inst.exports.track_field(i,3)|0]||"moving", placed }); }
+    const tr = decodeTracks(inst);            // generated descriptor, same as the built-in path
     const out = { belt:dv.getFloat32(p+OUT_OFF.belt_speed,true), gate:[], dispense:[], heater:("heater" in OUT_OFF)&&!!dv.getUint8(p+OUT_OFF.heater) };
     for (let k=0;k<N_DISP;k++){ out.gate.push(!!dv.getUint8(p+OUT_OFF.gate_open+k)); out.dispense.push(!!dv.getUint8(p+OUT_OFF.dispense+k)); }
     DBG.trace.push({ line, mem:{ tracks:tr }, out });

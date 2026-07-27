@@ -6,24 +6,16 @@
 // control logic may differ — the structure and the §4 contract are what matter.
 #pragma once
 #include "Machine.h"
+#include "generated/State.h"     // generated: enum Status + struct Track (HAL.md §H-8.1)
 #include <vector>
 
 namespace smores {
 
 enum Mode { OpenLoop, ClosedLoop };
-enum Status { Moving, Held, Toasting, Done, Lost };
 
-// The controller's BELIEF about one tray — it never reads the world's truth.
-struct Track {
-    int      id           = 0;
-    float    est_pos_mm   = 0;
-    int      stage        = 0;      // # stations completed (3 = assembled, 4 = toasted)
-    Status   status       = Moving;
-    int      hold         = -1;     // station index being held at, or -1
-    uint32_t phase_until  = 0;      // ms: dispense/toast phase end
-    int      placed[layout::N_DISP] = {};  // believed units per dispenser
-    int      retries      = 0;
-};
+// `Status` and `Track` are GENERATED (generated/State.h) so their memory layout is
+// described by the same descriptor the visualizer decodes with — no hand-written
+// per-field accessors, and no drift as the layout's dispenser count changes.
 
 // Geometry (station positions, tunnel, belt, speed) now comes from the generated
 // layout (layout::*, from the bound layout.json). Config keeps only the control

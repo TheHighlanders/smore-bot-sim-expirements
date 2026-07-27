@@ -336,12 +336,16 @@ mechanical, not aspirational:
 
 ## H-11. Phasing
 
-1. **P1 — HAL refactor, behavior-preserving.** Introduce the interfaces +
-   generated `Machine` + `Sim*`; delete `Hal.h`/`StructHal.h`; port the
-   subsystem/controller tests. Layouts unchanged (`io` optional, §H-6.4). All
-   existing tests must stay green.
-2. **P2 — telemetry.** Generated `State` block + `state_ptr()`; delete
-   `track_field()`; add `WATCH`. Wire the debugger/inspector to the generated map.
+1. **P1 — HAL refactor, behavior-preserving. ✅ DONE (2026-07-27).** Interfaces +
+   `Machine` + `Sim*` landed; `StructHal.h`/`Subsystems.h` deleted; tests ported.
+   Host + WASM integration green for both layouts.
+2. **P2 — telemetry.**
+   - **P2a ✅ DONE (2026-07-27):** generated `State.h` (`enum Status` + `struct
+     Track` + a `static_assert` on `sizeof`), exported as `tracks_ptr()` /
+     `track_stride()`; `track_field()` deleted; the visualizer, the debugger, the
+     integration test and the C++ studio starter all decode from the generated
+     descriptor. `retries`/`hold` became visible for free.
+   - **P2b — pending:** the `WATCH` macro for locals/derived values (§H-8.2).
 3. **P3 — layout v2 binding + validation.** `base[]`/`io` schema, §H-7
    validators, shared with the browser; generate `P1am*` wiring.
 4. **P4 — Studio project tree.** Multi-file editing, `layout.json` tab with live

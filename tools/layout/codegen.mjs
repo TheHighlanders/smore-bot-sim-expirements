@@ -15,9 +15,11 @@
 // ---- C type sizes/alignments for the wasm32 target (LP32; matches clang) ----
 const T = {
   u32:  { size: 4, align: 4, c: "uint32_t" },
+  i32:  { size: 4, align: 4, c: "int32_t" },
   f32:  { size: 4, align: 4, c: "float" },
   u8:   { size: 1, align: 1, c: "uint8_t" },
   bool: { size: 1, align: 1, c: "bool" },
+  stat: { size: 4, align: 4, c: "Status" },     // enum Status : int32_t
 };
 
 const INGREDIENT_ENUM = { graham: "Graham", chocolate: "Chocolate", marshmallow: "Marshmallow" };
@@ -126,8 +128,57 @@ function layoutStruct(fields) {
   return { fields: out, size };
 }
 
+// The controller's exposed BELIEF about one tray. Generating this struct (rather
+// than hand-mirroring it in JS) is what lets the UI decode any field with no
+// per-field accessor — it replaces the old hand-written track_field() switch,
+// which silently capped at 3 dispensers. See HAL.md §H-8.1.
+const STATUS_NAMES = ["moving", "held", "toasting", "done", "lost"];
+function trackFields(L) {
+  return [
+    { name: "id",          t: "i32", def: "0" },
+    { name: "est_pos_mm",  t: "f32", def: "0.f" },
+    { name: "stage",       t: "i32", def: "0" },
+    { name: "status",      t: "stat", def: "Moving" },
+    { name: "hold",        t: "i32", def: "-1" },
+    { name: "phase_until", t: "u32", def: "0" },
+    { name: "placed",      t: "i32", n: L.dispensers.length, def: "0" },
+    { name: "retries",     t: "i32", def: "0" },
+  ];
+}
+
 export function computeOffsets(L) {
-  return { inputs: layoutStruct(inputFields(L)), outputs: layoutStruct(outputFields(L)) };
+  return {
+    inputs:  layoutStruct(inputFields(L)),
+    outputs: layoutStruct(outputFields(L)),
+    track:   layoutStruct(trackFields(L)),
+    statusNames: STATUS_NAMES,
+  };
+}
+
+export function emitStateHeader(L) {
+  const flds = trackFields(L);
+  const size = layoutStruct(flds).size;
+  return `${banner(L, "State.h")}#pragma once
+#include <cstdint>
+#include "Layout.h"
+
+namespace smores {
+
+// Underlying type is fixed so the struct layout is stable across targets and the
+// visualizer can decode it from the generated offsets.
+enum Status : int32_t { ${STATUS_NAMES.map((n, i) => `${n[0].toUpperCase() + n.slice(1)} = ${i}`).join(", ")} };
+
+// One tracked tray, as the controller BELIEVES it to be. Never the world's truth.
+struct Track {
+${flds.map(cFieldDecl).join("\n")}
+};
+
+// Guards against this generated descriptor drifting from what the compiler
+// actually lays out — if this fires, the UI would be decoding garbage.
+static_assert(sizeof(Track) == ${size}, "Track layout must match the generated descriptor");
+
+} // namespace smores
+`;
 }
 
 // ---- emit C++ ----
@@ -265,6 +316,7 @@ if (isMain) {
     mkdirSync(includeDir, { recursive: true });
     writeFileSync(path.join(includeDir, "Layout.h"), emitLayoutHeader(L));
     writeFileSync(path.join(includeDir, "Contract.h"), emitContractHeader(L));
+    writeFileSync(path.join(includeDir, "State.h"), emitStateHeader(L));
   }
   if (metaPath) {
     mkdirSync(path.dirname(metaPath), { recursive: true });

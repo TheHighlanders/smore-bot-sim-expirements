@@ -41,7 +41,7 @@ controller-test:
 	$(MAKE) -C controller host-test
 
 # Layouts shipped in the Pages app (each is a bound controller.wasm + meta pair).
-APP_LAYOUTS ?= classic3 sandwich
+APP_LAYOUTS ?= classic3 sandwich sandwich_wired
 
 ## app: assemble the GitHub Pages app — build EACH layout's controller to WASM
 ## and stage it (docs/app/wasm/<layout>.wasm) alongside its generated meta

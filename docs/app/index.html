@@ -608,8 +608,9 @@ void tick() {
   // layout swap, not a code change.
   const INGREDIENT_COLOR = { graham:C.graham, chocolate:C.choc, marshmallow:C.marsh };
   const LAYOUT_CHOICES = [
-    { name:"sandwich", title:"Sandwich · graham cap after tunnel" },
-    { name:"classic3", title:"Classic · 3 stations, no cap" },
+    { name:"sandwich",       title:"Sandwich · graham cap after tunnel" },
+    { name:"sandwich_wired", title:"Sandwich · wired to P1AM modules" },
+    { name:"classic3",       title:"Classic · 3 stations, no cap" },
   ];
   let LAYOUT = null;               // active layout meta (+ .module = compiled wasm)
   let STATIONS = [];               // dispensers: {id,key,name,pos,color,ingredient,servos,after_tunnel,is_cap}

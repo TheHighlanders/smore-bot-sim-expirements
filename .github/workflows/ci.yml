@@ -65,6 +65,9 @@ jobs:
       # chip.json so it matches the binary path in wokwi.toml.
       - name: Collect chip artifacts
         run: |
+          # wokwi-chip-clang-action is a container action, so ./dist is created as
+          # root and a plain `mv` fails with EPERM. Take ownership first.
+          sudo chown -R "$(id -u):$(id -g)" dist
           mkdir -p wokwi/chips/p1-base-controller/dist
           mv dist/chip.wasm wokwi/chips/p1-base-controller/dist/chip.wasm
           cp wokwi/chips/p1-base-controller/chip.json wokwi/chips/p1-base-controller/dist/chip.json

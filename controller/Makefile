@@ -17,7 +17,10 @@ GEN       = $(GEN_DIR)/Contract.h $(GEN_DIR)/Layout.h
 REPO_ROOT := $(abspath ..)
 WASI      ?= $(REPO_ROOT)/.toolchains/wasi-sdk
 
-.PHONY: host-test test-subsystems test-controller wasm integration codegen clean
+.PHONY: host-test test-subsystems test-controller test-p1am wasm integration codegen validate-layouts clean
+
+# The P1AM portability test needs the façade + the shared base model.
+P1AM_INC = -I$(REPO_ROOT)/lib/P1AM_Sim -I$(REPO_ROOT)/shared
 
 ## codegen: (re)generate the contract for LAYOUT. Always run so a LAYOUT change
 ## takes effect; node is already a dep (integration test).
@@ -41,6 +44,25 @@ test-controller: codegen
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(SRC) test/test_controller.cpp -o build/test_controller
 	./build/test_controller
+
+## test-p1am: the PORTABILITY proof (HAL.md CI-H1) — build the real-hardware
+## machine (P1amMachine, slots+channels) over the P1AM façade and an in-process
+## base model, then run the SAME Controller.cpp against it. Needs a layout that
+## carries a hardware binding, so it forces LAYOUT=sandwich_wired.
+test-p1am:
+	@$(MAKE) -s codegen LAYOUT=sandwich_wired
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(P1AM_INC) $(SRC) $(REPO_ROOT)/lib/P1AM_Sim/P1AM_Sim.cpp \
+	  test/test_p1am_machine.cpp -o build/test_p1am_machine
+	./build/test_p1am_machine
+
+## validate-layouts: every layout must generate cleanly (wiring included).
+validate-layouts:
+	@for f in layouts/*.json; do \
+	  n=$$(basename $$f .json); \
+	  node $(REPO_ROOT)/tools/layout/codegen.mjs --layout $$f >/dev/null || exit 1; \
+	done
+	@echo "validate-layouts: all layouts OK"
 
 ## wasm: build controller.wasm (reactor module) — exports init/tick + the shared
 ## Inputs/Outputs pointers for the JS visualizer to drive. Needs wasi-sdk.

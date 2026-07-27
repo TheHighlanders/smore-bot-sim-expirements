@@ -1,0 +1,198 @@
+{
+  "schema": 2,
+  "name": "sandwich_wired",
+  "title": "Sandwich line, wired to real P1AM modules",
+  "description": "The sandwich layout plus a full hardware binding: a base[] module inventory and a per-signal io{} map. This is the layout that can generate the P1AM implementation, so it is the one that proves the same Controller.cpp drives real hardware. Wiring is validated against shared/module_db.h at build time (HAL.md L-7). NOTE: the P1-04THM config payload below is a 20-byte PLACEHOLDER of zeros \u2014 the per-field meaning of a module's configureModule() array is not published in our offline references (the vendor's config tool is JS-rendered), so we validate its LENGTH only. Get the real bytes from that tool.",
+  "belt": {
+    "length_mm": 1500,
+    "nominal_speed_mm_s": 110
+  },
+  "base": [
+    {
+      "slot": 1,
+      "part": "P1-15TD1"
+    },
+    {
+      "slot": 2,
+      "part": "P1-08ND3"
+    },
+    {
+      "slot": 3,
+      "part": "P1-16CDR"
+    },
+    {
+      "slot": 4,
+      "part": "P1-04THM",
+      "config": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "modules": [
+    {
+      "id": "g1",
+      "type": "dispenser",
+      "pos_mm": 300,
+      "ingredient": "graham",
+      "servos": 1,
+      "confirm": true,
+      "dispense_ms": 650,
+      "io": {
+        "sense": {
+          "slot": 2,
+          "channel": 1
+        },
+        "gate": {
+          "slot": 1,
+          "channel": 1
+        },
+        "actuator": [
+          {
+            "slot": 1,
+            "channel": 2
+          }
+        ],
+        "confirm": {
+          "slot": 2,
+          "channel": 2
+        }
+      }
+    },
+    {
+      "id": "c1",
+      "type": "dispenser",
+      "pos_mm": 600,
+      "ingredient": "chocolate",
+      "servos": 1,
+      "confirm": true,
+      "dispense_ms": 650,
+      "io": {
+        "sense": {
+          "slot": 2,
+          "channel": 3
+        },
+        "gate": {
+          "slot": 1,
+          "channel": 3
+        },
+        "actuator": [
+          {
+            "slot": 1,
+            "channel": 4
+          }
+        ],
+        "confirm": {
+          "slot": 2,
+          "channel": 4
+        }
+      }
+    },
+    {
+      "id": "m1",
+      "type": "dispenser",
+      "pos_mm": 900,
+      "ingredient": "marshmallow",
+      "servos": 1,
+      "confirm": true,
+      "dispense_ms": 650,
+      "io": {
+        "sense": {
+          "slot": 2,
+          "channel": 5
+        },
+        "gate": {
+          "slot": 1,
+          "channel": 5
+        },
+        "actuator": [
+          {
+            "slot": 1,
+            "channel": 6
+          }
+        ],
+        "confirm": {
+          "slot": 2,
+          "channel": 6
+        }
+      }
+    },
+    {
+      "id": "tun",
+      "type": "tunnel",
+      "pos_mm": 1050,
+      "exit_mm": 1185,
+      "toast_ms": 3800,
+      "io": {
+        "entry": {
+          "slot": 2,
+          "channel": 7
+        },
+        "exit": {
+          "slot": 2,
+          "channel": 8
+        },
+        "temp": {
+          "slot": 4,
+          "channel": 1
+        },
+        "gate": {
+          "slot": 1,
+          "channel": 7
+        },
+        "heater": {
+          "slot": 3,
+          "channel": 1
+        }
+      }
+    },
+    {
+      "id": "g2",
+      "type": "dispenser",
+      "pos_mm": 1350,
+      "ingredient": "graham",
+      "servos": 1,
+      "confirm": true,
+      "role": "cap",
+      "dispense_ms": 650,
+      "io": {
+        "sense": {
+          "slot": 3,
+          "channel": 1
+        },
+        "gate": {
+          "slot": 1,
+          "channel": 8
+        },
+        "actuator": [
+          {
+            "slot": 1,
+            "channel": 9
+          }
+        ],
+        "confirm": {
+          "slot": 3,
+          "channel": 2
+        }
+      }
+    }
+  ]
+}

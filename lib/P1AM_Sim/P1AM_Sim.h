@@ -83,6 +83,23 @@ public:
      * same 4 bytes readAnalog returns. [ref: p1am-library.md -> P1AM.h:53] */
     float readTemperature(uint8_t slot, uint8_t channel);
 
+    /* Configure a module that requires it before its data is valid (analog /
+     * thermocouple parts). Real signature:
+     *   bool configureModule(const char cfgData[], uint8_t slot)
+     * [ref: docs/references/p1am-library/P1AM.h:72-73; parameter meaning:
+     *  docs/references/facts-docs/api_reference.md:97-100]
+     * SIM DEVIATION: the payload's per-field meaning is not published in our
+     * offline references (the vendor's config tool is JS-rendered), so this shim
+     * RECORDS the bytes and reports success rather than modelling their effect.
+     * That is enough to verify a controller configures the right slots, which is
+     * what the tests assert. */
+    bool configureModule(const char *cfgData, uint8_t slot);
+
+    /* Slot of the last configureModule() call, or 0 — lets a host test assert that
+     * startup configured the modules the layout says need it. */
+    uint8_t lastConfiguredSlot() const { return _lastCfgSlot; }
+    uint8_t configuredCount() const    { return _cfgCount; }
+
     /* Base controller firmware version. The real library documents this as
      * "byte format X.Y.ZZ" [ref: docs/references/p1am-library.md, P1AM.cpp:1152];
      * the sim returns a fixed raw value (see base_model.h bm_init). */
@@ -93,6 +110,8 @@ private:
     uint8_t  _numModules;
     uint32_t _slotId[P1_MAX_SLOTS];   /* module id per slot (index 0 == slot 1) */
     uint8_t  _slotDo[P1_MAX_SLOTS];   /* doBytes per slot                        */
+    uint8_t  _lastCfgSlot = 0;        /* see configureModule()                   */
+    uint8_t  _cfgCount    = 0;
 };
 
 /* Global instance, exactly like the real library's `P1`.

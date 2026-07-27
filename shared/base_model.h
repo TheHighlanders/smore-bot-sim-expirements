@@ -72,8 +72,10 @@ typedef struct {
     uint8_t  num_modules;                             /* 0..P1_MAX_SLOTS */
     uint32_t module_id[P1_MAX_SLOTS];                 /* per slot (index 0 == slot 1) */
     uint8_t  do_bytes[P1_MAX_SLOTS];                  /* cached from the module db     */
+    uint8_t  di_bytes[P1_MAX_SLOTS];                  /* cached from the module db     */
     uint8_t  ai_bytes[P1_MAX_SLOTS];                  /* cached from the module db     */
     uint8_t  out_image[P1_MAX_SLOTS][P1_MAX_DO_BYTES];/* discrete output (LSB=ch1)     */
+    uint8_t  in_image[P1_MAX_SLOTS][P1_MAX_DO_BYTES]; /* discrete input  (LSB=ch1)     */
     uint8_t  ai_image[P1_MAX_SLOTS][P1_MAX_AI_BYTES]; /* analog input: 4 bytes LE/ch   */
     uint32_t fw_version;                              /* reported by VERSION_HDR       */
 } p1_base_model_t;
@@ -96,6 +98,7 @@ static inline void bm_init(p1_base_model_t *m, const char *const *names, uint8_t
         }
         m->module_id[slot] = p->id;
         m->do_bytes[slot]  = p->doBytes;
+        m->di_bytes[slot]  = p->diBytes;
         m->ai_bytes[slot]  = p->aiBytes;
         slot++;
     }
@@ -105,6 +108,19 @@ static inline void bm_init(p1_base_model_t *m, const char *const *names, uint8_t
 /* True if `slot` (1-based) is a valid configured slot. */
 static inline int bm_valid_slot(const p1_base_model_t *m, uint8_t slot) {
     return slot >= 1 && slot <= m->num_modules;
+}
+
+/* Drive a discrete INPUT point (a field sensor wired to an input module).
+ * slot/channel are 1-based; bit LSB = channel 1, matching the real bitmap layout
+ * [ref: docs/references/facts-docs/api_reference.md:172-180]. */
+static inline void bm_set_discrete_in(p1_base_model_t *m, uint8_t slot,
+                                      uint8_t channel, int on) {
+    if (!bm_valid_slot(m, slot) || channel < 1) return;
+    uint8_t idx = (uint8_t)((channel - 1) / 8);
+    uint8_t bit = (uint8_t)((channel - 1) % 8);
+    if (idx >= P1_MAX_DO_BYTES) return;
+    if (on) m->in_image[slot - 1][idx] |=  (uint8_t)(1u << bit);
+    else    m->in_image[slot - 1][idx] &= (uint8_t)~(1u << bit);
 }
 
 /* Set an analog-input channel's raw value (int32, e.g. counts or float bits).
@@ -195,8 +211,11 @@ static inline size_t bm_handle(p1_base_model_t *m,
         memset(resp, 0, P1_READ_RESP_LEN);
         if (cmd_len >= 2 && bm_valid_slot(m, cmd[1])) {
             uint8_t slot = cmd[1];
-            uint8_t db   = m->do_bytes[slot - 1];
-            const uint8_t *img = m->out_image[slot - 1];
+            /* A module with discrete inputs reports those; an output-only module
+             * reports a readback of what was written to it. */
+            uint8_t db   = m->di_bytes[slot - 1] ? m->di_bytes[slot - 1] : m->do_bytes[slot - 1];
+            const uint8_t *img = m->di_bytes[slot - 1] ? m->in_image[slot - 1]
+                                                      : m->out_image[slot - 1];
             for (uint8_t b = 0; b < db && b < P1_READ_RESP_LEN; b++) {
                 resp[b] = img[b];
             }

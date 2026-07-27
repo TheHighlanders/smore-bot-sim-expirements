@@ -115,3 +115,16 @@ uint32_t P1AM_Sim::getFwVersion() {
 static SpiTransport g_spiTransport;
 P1AM_Sim P1(g_spiTransport);
 #endif
+
+/* See the header: records the request rather than modelling the payload's effect,
+ * because the per-field meaning of a module config array is not published in our
+ * offline references. Returns success like the real API does
+ * [ref: docs/references/facts-docs/api_reference.md:97-100]. */
+bool P1AM_Sim::configureModule(const char *cfgData, uint8_t slot)
+{
+    (void)cfgData;
+    if (slot == 0 || slot > P1_MAX_SLOTS) return false;
+    _lastCfgSlot = slot;
+    _cfgCount++;
+    return true;
+}

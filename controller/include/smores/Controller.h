@@ -17,12 +17,12 @@ enum Mode { OpenLoop, ClosedLoop };
 // described by the same descriptor the visualizer decodes with — no hand-written
 // per-field accessors, and no drift as the layout's dispenser count changes.
 
-// Geometry (station positions, tunnel, belt, speed) now comes from the generated
-// layout (layout::*, from the bound layout.json). Config keeps only the control
-// timings — decisions the controller makes, not physical facts of the machine.
+// Geometry (positions, tunnel, belt, speed) comes from the generated layout
+// (layout::*). Config is controller POLICY only. Mechanical dwells (how long a dispenser must run, how
+// long the tunnel toasts) are properties of the MACHINE and now come from the
+// layout — layout::DISP[k].dispense_ms / layout::TUNNEL_TOAST_MS (HAL.md OQ-2).
 struct Config {
-    uint32_t dispense_ms     = 650;     // dispenser output run time before release
-    uint32_t toast_ms        = 3800;    // tunnel dwell
+    int max_retries = 3;                // closed-loop: attempts before flagging
 };
 
 // Optional log sink: (kind, message). kind in {"evt","warn","crit"}.

@@ -65,7 +65,7 @@ void Controller::update() {
                 WATCH("drift_mm", corr);
                 tr->est_pos_mm = layout::DISP[k].pos_mm;       // snap: correct drift
                 if (tr->stage == layout::DISP[k].stage) {      // this dispenser is next in the recipe
-                    tr->status = Held; tr->hold = k; tr->retries = 0; tr->phase_until = now + cfg_.dispense_ms;
+                    tr->status = Held; tr->hold = k; tr->retries = 0; tr->phase_until = now + layout::DISP[k].dispense_ms;
                     say("evt", "saw #%d at %s (drift %+.0fmm) - closing gate, running dispenser", tr->id, layout::DISP[k].id, corr);
                 }
             }
@@ -79,8 +79,8 @@ void Controller::update() {
             int k = tr.hold;
             if (mode_ == ClosedLoop) {
                 uint8_t c = confirm[k];
-                if (c == 0 && tr.retries < 3) {                // nothing dropped -> keep running (retry)
-                    tr.retries++; tr.phase_until = now + cfg_.dispense_ms;
+                if (c == 0 && tr.retries < cfg_.max_retries) {                // nothing dropped -> keep running (retry)
+                    tr.retries++; tr.phase_until = now + layout::DISP[k].dispense_ms;
                     say("warn", "no drop confirmed for #%d at station %d - extending dispenser run (retry %d)", tr.id, k, tr.retries);
                     continue;
                 }
@@ -90,7 +90,7 @@ void Controller::update() {
                 else             say("evt",  "station %d confirmed on #%d - opening gate", k, tr.id);
             } else {
                 tr.placed[k] = 1;                              // believes it placed (ran output long enough)
-                say("evt", "ran %s dispenser %ums -> assuming placed, opening gate for #%d", layout::DISP[k].id, cfg_.dispense_ms, tr.id);
+                say("evt", "ran %s dispenser %ums -> assuming placed, opening gate for #%d", layout::DISP[k].id, layout::DISP[k].dispense_ms, tr.id);
             }
             tr.stage = layout::DISP[k].stage + 1; tr.status = Moving; tr.hold = -1;
         }
@@ -107,14 +107,14 @@ void Controller::update() {
     if (tEntry) {
         Track* tr = nearest(layout::TUNNEL_ENTRY_MM);
         if (tr && tr->stage == layout::TUNNEL_STAGE && tr->status == Moving) {
-            tr->status = Toasting; tr->phase_until = now + cfg_.toast_ms;
+            tr->status = Toasting; tr->phase_until = now + layout::TUNNEL_TOAST_MS;
             say("evt", "#%d reached tunnel - heater ON, closing tunnel gate to toast", tr->id);
         }
     }
     for (auto& tr : tracks_)
         if (tr.status == Toasting && now >= tr.phase_until) {
             tr.stage = layout::TUNNEL_STAGE + 1; tr.status = Moving;
-            say("evt", "tunnel dwell %ums elapsed - opening tunnel gate, releasing #%d", cfg_.toast_ms, tr.id);
+            say("evt", "tunnel dwell %ums elapsed - opening tunnel gate, releasing #%d", layout::TUNNEL_TOAST_MS, tr.id);
         }
     bool toasting = false;
     for (auto& tr : tracks_) if (tr.status == Toasting) toasting = true;

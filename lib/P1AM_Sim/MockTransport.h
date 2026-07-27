@@ -42,6 +42,11 @@ public:
 
     /* Test-only: inject an analog reading (what a real module's ADC would see).
      * On the Wokwi chip the same image is populated from control sliders. */
+    /* Drive a discrete input point (a field sensor). 1-based slot/channel. */
+    void setDiscreteIn(uint8_t slot, uint8_t channel, bool on) {
+        bm_set_discrete_in(&_model, slot, channel, on ? 1 : 0);
+    }
+
     void setAnalog(uint8_t slot, uint8_t channel, int32_t counts) {
         bm_set_analog(&_model, slot, channel, (uint32_t)counts);
     }

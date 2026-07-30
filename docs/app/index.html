@@ -30,7 +30,9 @@
       radial-gradient(120% 80% at 70% -10%, #241d15 0%, var(--bg) 55%) fixed;
     color:var(--text); font-family:var(--sans);
     display:flex; flex-direction:column; gap:14px; padding:16px;
-    max-width:1280px; margin:0 auto;
+    /* every box size below is a custom property so it can be dragged at runtime
+       and remembered in localStorage — see "resizable boxes" in the script */
+    max-width:min(var(--app-w,1280px), 100%); margin:0 auto; position:relative;
   }
 
   /* ---------- top status bar ---------- */
@@ -73,8 +75,9 @@
   .pill.fault{ color:var(--crit); background:rgba(226,73,58,.10); border-color:rgba(226,73,58,.40); }
 
   /* ---------- main stage ---------- */
-  .stage { display:grid; grid-template-columns:1fr 340px; gap:14px; align-items:start; }
-  @media (max-width:900px){ .stage { grid-template-columns:1fr; } }
+  /* min() keeps a stored rail width from ever squeezing the line view off-screen */
+  .stage { display:grid; grid-template-columns:minmax(0,1fr) min(var(--rail-w,340px),72%); gap:14px; align-items:start; }
+  @media (max-width:900px){ .stage { grid-template-columns:minmax(0,1fr); } }
 
   .panel {
     border:1px solid var(--hair); border-radius:12px;
@@ -108,7 +111,7 @@
   .legend i.ghost { background:transparent; border:1.5px dashed var(--teal); border-radius:3px; }
 
   /* ---------- inspector rail ---------- */
-  .inspector { display:flex; flex-direction:column; gap:14px; }
+  .inspector { display:flex; flex-direction:column; gap:14px; position:relative; }
 
   table.grid { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:11.5px; }
   table.grid th, table.grid td { text-align:left; padding:5px 14px; border-bottom:1px solid var(--hair-soft); }
@@ -134,7 +137,7 @@
   .io-row .val.off { color:var(--muted-2); }
   .io-row .val.hot { color:var(--ember); }
 
-  .log { height:172px; overflow:auto; padding:8px 0; font-family:var(--mono); font-size:11px; }
+  .log { height:var(--log-h,172px); overflow:auto; padding:8px 0; font-family:var(--mono); font-size:11px; }
   .log .line { display:flex; gap:10px; padding:2px 14px; white-space:nowrap; }
   .log .t { color:var(--teal-dim); font-variant-numeric:tabular-nums; }
   .log .m { color:var(--muted); }
@@ -170,8 +173,10 @@
   /* ---------- compare view (side-by-side A/B) ---------- */
   .app[data-view="compare"] .single-only { display:none; }
   .app[data-view="single"]  .compare-only { display:none; }
-  .compare-view { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
-  @media (max-width:900px){ .compare-view { grid-template-columns:1fr; } }
+  /* the default is "half the width minus half the gap", i.e. the old 1fr 1fr */
+  .compare-view { display:grid; grid-template-columns:min(var(--lane-a,calc(50% - 7px)),84%) minmax(0,1fr);
+                  gap:14px; align-items:start; }
+  @media (max-width:900px){ .compare-view { grid-template-columns:minmax(0,1fr); } }
 
   /* ---------- studio view (write your own controller) ---------- */
   .studio-only { display:none; }
@@ -200,12 +205,13 @@
   .studio { flex-direction:column; gap:0; padding:0; overflow:hidden; }
   .studio-hd { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--hair); flex-wrap:wrap; }
   .studio-hd .spacer { flex:1; }
-  .studio-body { display:grid; grid-template-columns:214px 1fr; align-items:stretch; }
-  @media (max-width:900px){ .studio-body { grid-template-columns:1fr; } }
+  .studio-body { display:grid; grid-template-columns:min(var(--tree-w,214px),60%) minmax(0,1fr);
+                 align-items:stretch; position:relative; }
+  @media (max-width:900px){ .studio-body { grid-template-columns:minmax(0,1fr); } }
   .studio-main { min-width:0; }
-  #editor { width:100%; height:440px; }
+  #editor { width:100%; height:var(--editor-h,440px); }
   .file-tree { border-right:1px solid var(--hair); background:var(--panel-2); padding:8px 0;
-    max-height:calc(440px + 40px); overflow-y:auto; font-family:var(--mono); font-size:11.5px; }
+    max-height:calc(var(--editor-h,440px) + 40px); overflow-y:auto; font-family:var(--mono); font-size:11.5px; }
   .file-group { padding:10px 12px 4px; font-size:8.5px; letter-spacing:.13em; text-transform:uppercase;
     color:var(--muted-2); }
   .file-item { display:flex; align-items:center; gap:6px; width:100%; text-align:left; cursor:pointer;
@@ -240,8 +246,36 @@
   canvas.lane-canvas { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
   .lane-sub { font-size:9.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--muted-2);
     padding:8px 14px 2px; }
-  .lane-log { height:150px; overflow:auto; padding:6px 0 8px; }
+  .lane-log { height:var(--lane-log-h,150px); overflow:auto; padding:6px 0 8px; }
+  .lane-col { position:relative; }
   button.btn .ic { width:12px; height:12px; }
+
+  /* ---------- resizable boxes ---------- */
+  /* Drag a grip to resize the box above (or beside) it; double-click a grip to
+     put that one dimension back to its built-in size. Grips are invisible until
+     hovered so they don't clutter the teaching UI. Sizes are persisted — see
+     UI_DIMS in the script for the key → CSS-variable mapping. */
+  .grip { --grip-thick:9px; z-index:6; flex:none; opacity:0; touch-action:none;
+          transition:opacity .12s ease; }
+  .grip::after { content:""; position:absolute; inset:0; margin:auto; display:block;
+                 background:var(--teal); border-radius:999px; }
+  .grip:hover, .grip:focus-visible, .grip.on { opacity:.8; }
+  .grip:focus-visible { outline:none; }
+  .grip:focus-visible::after { background:#fff; }
+  .grip-y { position:relative; height:var(--grip-thick); margin:-2px 8px 1px; cursor:ns-resize; }
+  .grip-y::after { height:3px; width:52px; }
+  .grip-x { position:absolute; top:0; bottom:0; width:var(--grip-thick); cursor:ew-resize; }
+  .grip-x::after { width:3px; height:52px; }
+  .grip-rail { left:-13px; }          /* sits in the stage's column gap */
+  .grip-lane, .grip-app { right:0; }  /* rides the panel / page right edge */
+  /* straddles the file-tree border, so it's inside neither scroll box */
+  .grip-tree { left:calc(min(var(--tree-w,214px),60%) - 4px); }
+  body.rsz { user-select:none; -webkit-user-select:none; }
+  body.rsz .grip { opacity:.8; }
+  body.rsz-y, body.rsz-y * { cursor:ns-resize !important; }
+  body.rsz-x, body.rsz-x * { cursor:ew-resize !important; }
+  /* single-column layout: the horizontal splitters have nothing left to split */
+  @media (max-width:900px){ .grip-rail, .grip-lane, .grip-tree { display:none; } }
 
   input[type=range] { -webkit-appearance:none; appearance:none; height:4px; width:130px; border-radius:3px;
     background:var(--hair); outline:none; }
@@ -305,9 +339,15 @@
       <nav class="file-tree" id="fileTree" aria-label="Project files"></nav>
       <div class="studio-main">
         <div id="editor"></div>
+        <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize the editor height"
+             tabindex="0" data-dim="editorH" data-measure="#editor"
+             title="Drag to change the editor height · double-click to reset"></div>
         <div class="studio-status" id="studioStatus">Monaco loading…</div>
         <div id="dbgVars" style="display:none"></div>
       </div>
+      <div class="grip grip-x grip-tree" role="separator" aria-orientation="vertical" aria-label="Resize the file tree width"
+           tabindex="0" data-dim="treeW" data-measure=".file-tree" data-cap=".studio-body" data-cap-frac="0.6"
+           title="Drag to change the file tree width · double-click to reset"></div>
     </div>
   </section>
 
@@ -1584,6 +1624,9 @@ def run_one_control_cycle(machine, memory):
         <canvas id="line" width="1600" height="620" role="img"
           aria-label="Conveyor line: three dispenser stations then a heating tunnel, with trays and the controller's estimated positions"></canvas>
       </div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize the line view height"
+           tabindex="0" data-dim="lineH" data-measure="#line"
+           title="Drag to change the line view height · double-click to reset"></div>
       <div class="legend">
         <span><i style="background:var(--graham)"></i>graham</span>
         <span><i style="background:var(--choc)"></i>chocolate</span>
@@ -1595,6 +1638,9 @@ def run_one_control_cycle(machine, memory):
     </section>
 
     <aside class="inspector">
+      <div class="grip grip-x grip-rail" role="separator" aria-orientation="vertical" aria-label="Resize the inspector rail width"
+           tabindex="0" data-dim="railW" data-measure=".inspector" data-dir="-1" data-cap=".stage" data-cap-frac="0.72"
+           title="Drag to change the inspector rail width · double-click to reset"></div>
       <section class="panel">
         <div class="panel-hd"><h2>Tray tracking</h2><span class="hint">est vs actual</span></div>
         <div style="overflow-x:auto">
@@ -1626,6 +1672,9 @@ def run_one_control_cycle(machine, memory):
       <section class="panel">
         <div class="panel-hd"><h2>Decision log</h2><span class="hint">controller</span></div>
         <div class="log" id="log"></div>
+        <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize the decision log height"
+             tabindex="0" data-dim="logH" data-measure="#log"
+             title="Drag to change the decision log height · double-click to reset"></div>
       </section>
     </aside>
   </main>
@@ -1640,6 +1689,9 @@ def run_one_control_cycle(machine, memory):
     </div>
     <div class="tl-wrap"><canvas id="tl" width="1600" height="214" role="img"
       aria-label="Timeline of controller input and output signals over the whole run"></canvas></div>
+    <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize the signal history height"
+         tabindex="0" data-dim="tlH" data-measure="#tl"
+         title="Drag to change the signal history height — taller means taller signal lanes · double-click to reset"></div>
   </section>
 
   <section class="compare-view compare-only">
@@ -1650,10 +1702,22 @@ def run_one_control_cycle(machine, memory):
         <span class="pill stop" id="lane0-state"><span class="dot"></span>PAUSED</span>
       </div>
       <div class="lane-canvas-wrap"><canvas id="laneA" class="lane-canvas" width="1200" height="620" role="img" aria-label="Lane A line view"></canvas></div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize both lane line views"
+           tabindex="0" data-dim="laneH" data-measure="#laneA"
+           title="Drag to change both lane line views · double-click to reset"></div>
       <div class="lane-sub">Signal history</div>
       <div class="lane-canvas-wrap"><canvas id="laneA-tl" class="lane-canvas" width="1200" height="400" role="img" aria-label="Lane A signal history"></canvas></div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize both lane signal histories"
+           tabindex="0" data-dim="laneTlH" data-measure="#laneA-tl"
+           title="Drag to change both lane signal histories · double-click to reset"></div>
       <div class="lane-sub">Decision log</div>
       <div class="log lane-log" id="lane0-log"></div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize both lane decision logs"
+           tabindex="0" data-dim="laneLogH" data-measure="#lane0-log"
+           title="Drag to change both lane decision logs · double-click to reset"></div>
+      <div class="grip grip-x grip-lane" role="separator" aria-orientation="vertical" aria-label="Resize the lane split"
+           tabindex="0" data-dim="laneA" data-measure=".lane-col" data-cap=".compare-view" data-cap-frac="0.84"
+           title="Drag to change how the two lanes divide the width · double-click to reset"></div>
     </section>
     <section class="panel lane-col">
       <div class="lane-hd">
@@ -1662,10 +1726,19 @@ def run_one_control_cycle(machine, memory):
         <span class="pill stop" id="lane1-state"><span class="dot"></span>PAUSED</span>
       </div>
       <div class="lane-canvas-wrap"><canvas id="laneB" class="lane-canvas" width="1200" height="620" role="img" aria-label="Lane B line view"></canvas></div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize both lane line views"
+           tabindex="0" data-dim="laneH" data-measure="#laneB"
+           title="Drag to change both lane line views · double-click to reset"></div>
       <div class="lane-sub">Signal history</div>
       <div class="lane-canvas-wrap"><canvas id="laneB-tl" class="lane-canvas" width="1200" height="400" role="img" aria-label="Lane B signal history"></canvas></div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize both lane signal histories"
+           tabindex="0" data-dim="laneTlH" data-measure="#laneB-tl"
+           title="Drag to change both lane signal histories · double-click to reset"></div>
       <div class="lane-sub">Decision log</div>
       <div class="log lane-log" id="lane1-log"></div>
+      <div class="grip grip-y" role="separator" aria-orientation="horizontal" aria-label="Resize both lane decision logs"
+           tabindex="0" data-dim="laneLogH" data-measure="#lane1-log"
+           title="Drag to change both lane decision logs · double-click to reset"></div>
     </section>
   </section>
 
@@ -1704,11 +1777,20 @@ def run_one_control_cycle(machine, memory):
       <span class="glabel">Fault&nbsp;inject</span>
       <span id="faultBtns" style="display:flex;gap:8px;flex-wrap:wrap"></span>
     </div>
+    <div class="group">
+      <span class="glabel">Boxes</span>
+      <button class="btn" id="boxCopyBtn" title="Copy the sizes you've dragged to as a CSS snippet, ready to paste into this file as the new defaults">⧉ Copy sizes</button>
+      <button class="btn" id="boxResetBtn" title="Put every box back to its built-in size">↺ Reset boxes</button>
+    </div>
   </footer>
 
   <p class="footnote">The on-screen brain is the <b>real C++ controller compiled to WebAssembly</b>, driven tick-by-tick
     across the same input→output contract that its <b>layout.json generated</b>. Physics &amp; sensors are simulated;
     drift is deliberate so you can watch the controller correct it at each sensor.</p>
+
+  <div class="grip grip-x grip-app" role="separator" aria-orientation="vertical" aria-label="Resize the page width"
+       tabindex="0" data-dim="appW" data-measure=".app" data-dir="2"
+       title="Drag the page edge to change the overall width · double-click to reset"></div>
 </div>
 
 <script>
@@ -2060,8 +2142,12 @@ def run_one_control_cycle(machine, memory):
   // same renderer serves the single big view and both compare lanes.
   let ctx, CW=900, CH=360, DPR=1;
   const TGT = {};
-  function mkTarget(id, aspect){ const el=document.getElementById(id); return el ? { el, ctx:el.getContext("2d"), cw:900, ch:360, aspect } : null; }
-  function fitTarget(t){ if(!t) return; const w=t.el.clientWidth||900; DPR=Math.min(2,window.devicePixelRatio||1); t.cw=w; t.ch=Math.round(w*t.aspect); t.el.width=Math.round(t.cw*DPR); t.el.height=Math.round(t.ch*DPR); t.ctx.setTransform(DPR,0,0,DPR,0,0); }
+  // `dim` names the resizable-box dimension holding a user-dragged height; with
+  // nothing dragged the height stays width*aspect, i.e. fully responsive. The CSS
+  // is `width:100%; height:auto`, so the attribute ratio we set here *is* the
+  // rendered height — no extra style write needed.
+  function mkTarget(id, aspect, dim){ const el=document.getElementById(id); return el ? { el, ctx:el.getContext("2d"), cw:900, ch:360, aspect, dim } : null; }
+  function fitTarget(t){ if(!t) return; const w=t.el.clientWidth||900; DPR=Math.min(2,window.devicePixelRatio||1); t.cw=w; t.ch=UI.get(t.dim) ?? Math.round(w*t.aspect); t.el.width=Math.round(t.cw*DPR); t.el.height=Math.round(t.ch*DPR); t.ctx.setTransform(DPR,0,0,DPR,0,0); }
   function setCanvas(t){ ctx=t.ctx; CW=t.cw; CH=t.ch; }
   function fitAll(){ fitTarget(TGT.main); fitTarget(TGT.A); fitTarget(TGT.B); fitTLT(TLT.single); fitTLT(TLT.A); fitTLT(TLT.B); }
   const PADX=54, beltH=54;
@@ -2191,9 +2277,9 @@ def run_one_control_cycle(machine, memory):
   // ---- timeline (signal history, AdvantageScope-style) — target-switchable ----
   let tlx, TW=900, TH=214;
   const TLT={};
-  function mkTL(id, aspect){ const el=document.getElementById(id); return el?{el,ctx:el.getContext("2d"),tw:900,th:214,aspect}:null; }
+  function mkTL(id, aspect, dim){ const el=document.getElementById(id); return el?{el,ctx:el.getContext("2d"),tw:900,th:214,aspect,dim}:null; }
   function fitTLT(t){ if(!t)return; const w=t.el.clientWidth||900; const d=Math.min(2,window.devicePixelRatio||1);
-    t.tw=w; t.th=t.aspect?Math.max(160,Math.round(w*t.aspect)):214; t.el.width=Math.round(t.tw*d); t.el.height=Math.round(t.th*d); t.ctx.setTransform(d,0,0,d,0,0); }
+    t.tw=w; t.th=UI.get(t.dim) ?? (t.aspect?Math.max(160,Math.round(w*t.aspect)):214); t.el.width=Math.round(t.tw*d); t.el.height=Math.round(t.th*d); t.ctx.setTransform(d,0,0,d,0,0); }
   function setTL(t){ tlx=t.ctx; TW=t.tw; TH=t.th; }
   function rgba(hex,a){ const p=hx(hex); return `rgba(${p[0]},${p[1]},${p[2]},${a})`; }
   // gates shown as CLOSED=high (the informative pulse); sensors/heater raw.
@@ -3378,8 +3464,111 @@ def run_one_control_cycle(machine, memory):
 
   // ---- boot ----
   const APP=document.querySelector(".app"); APP.dataset.view="single";
-  TGT.main=mkTarget("line",0.40); TGT.A=mkTarget("laneA",0.52); TGT.B=mkTarget("laneB",0.52);
-  TLT.single=mkTL("tl",0); TLT.A=mkTL("laneA-tl",0.34); TLT.B=mkTL("laneB-tl",0.34);
+
+  // ---- resizable boxes ----
+  // One drag-to-size dimension per entry. `css` dimensions are handed to CSS as a
+  // custom property on .app; the ones without a `css` are canvas heights, which
+  // fitTarget/fitTLT read instead of deriving from the aspect ratio. Anything not
+  // stored stays at the stylesheet default, so a fresh visitor sees the shipped
+  // layout and "Reset boxes" is just "forget everything".
+  const UI_KEY = "smores.ui.boxes.v1";
+  const UI_DIMS = {
+    appW:     { css:"--app-w",       min:900, max:3400 },
+    railW:    { css:"--rail-w",      min:240, max:760  },
+    logH:     { css:"--log-h",       min:70,  max:700  },
+    editorH:  { css:"--editor-h",    min:160, max:1400 },
+    treeW:    { css:"--tree-w",      min:120, max:640  },
+    laneA:    { css:"--lane-a",      min:280, max:2600 },
+    laneLogH: { css:"--lane-log-h",  min:70,  max:700  },
+    lineH:    { min:180, max:1100 },   // canvas heights (no CSS var — see fitTarget)
+    tlH:      { min:150, max:900  },
+    laneH:    { min:180, max:1100 },
+    laneTlH:  { min:140, max:900  },
+  };
+  const UI = (()=>{
+    let v = {};
+    try { v = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch(e){ v = {}; }   // private mode / bad blob → defaults
+    for (const k of Object.keys(v)) if (!UI_DIMS[k] || typeof v[k] !== "number") delete v[k];
+    const api = {
+      get: k => (typeof v[k] === "number" ? v[k] : null),
+      set(k, px){ const d=UI_DIMS[k]; if(!d) return; v[k]=Math.max(d.min, Math.min(d.max, Math.round(px))); api.apply(); },
+      clear(k){ delete v[k]; const d=UI_DIMS[k]; if (d && d.css) APP.style.removeProperty(d.css); },
+      reset(){ for (const k of Object.keys(UI_DIMS)) api.clear(k); },
+      apply(){ for (const [k,d] of Object.entries(UI_DIMS))
+                 if (d.css && typeof v[k]==="number") APP.style.setProperty(d.css, v[k]+"px"); },
+      save(){ try { Object.keys(v).length ? localStorage.setItem(UI_KEY, JSON.stringify(v))
+                                          : localStorage.removeItem(UI_KEY); } catch(e){} },
+      dump: ()=>({...v}),
+    };
+    api.apply();
+    return api;
+  })();
+  // Re-fit is cheap and idempotent: canvases redraw from logical units. Monaco's
+  // automaticLayout does NOT notice its container being resized this way, so it
+  // gets an explicit layout() call. (Nothing is drawable until the layout's wasm
+  // is in, hence the BOOTED guard.)
+  let BOOTED = false;
+  const uiRefit = ()=>{
+    fitAll();
+    if (BOOTED) renderAll();
+    if (STUDIO.editor) STUDIO.editor.layout();
+  };
+  function makeSizer(grip){
+    const key = grip.dataset.dim, dim = UI_DIMS[key];
+    if (!key || !dim) return;
+    const axis = grip.classList.contains("grip-x") ? "x" : "y";
+    const dir  = Number(grip.dataset.dir || 1);              // -1 when dragging a left edge
+    const measured = ()=>{ const el = document.querySelector(grip.dataset.measure);
+      if (!el) return dim.min;
+      const r = el.getBoundingClientRect(); return axis==="x" ? r.width : r.height; };
+    // A column splitter also can't exceed its grid — matches the CSS min() cap, so
+    // the grip never drifts away from the edge it's dragging.
+    const cap = ()=>{ const el = grip.dataset.cap && document.querySelector(grip.dataset.cap);
+      return el ? el.getBoundingClientRect().width * Number(grip.dataset.capFrac || 0.8) : Infinity; };
+    const put = px => UI.set(key, Math.min(px, cap()));
+    const nudge = px => { put((UI.get(key) ?? measured()) + px); uiRefit(); UI.save(); };
+    grip.addEventListener("pointerdown", e=>{
+      if (e.button) return;
+      e.preventDefault(); grip.setPointerCapture(e.pointerId); grip.classList.add("on");
+      document.body.classList.add("rsz", axis==="x" ? "rsz-x" : "rsz-y");
+      const p0 = axis==="x" ? e.clientX : e.clientY, s0 = UI.get(key) ?? measured();
+      const move = ev=>{ put(s0 + dir*((axis==="x" ? ev.clientX : ev.clientY) - p0)); uiRefit(); };
+      const done = ()=>{
+        grip.removeEventListener("pointermove", move);
+        grip.removeEventListener("pointerup", done); grip.removeEventListener("pointercancel", done);
+        grip.classList.remove("on"); document.body.classList.remove("rsz","rsz-x","rsz-y"); UI.save();
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", done); grip.addEventListener("pointercancel", done);
+    });
+    grip.addEventListener("dblclick", ()=>{ UI.clear(key); uiRefit(); UI.save(); });
+    grip.addEventListener("keydown", e=>{                    // keyboard-reachable separator
+      const step = e.shiftKey ? 4 : 16;
+      const k = e.key;
+      if (axis==="x" && (k==="ArrowLeft"||k==="ArrowRight")) { e.preventDefault(); nudge(dir*(k==="ArrowRight"? step : -step)); }
+      if (axis==="y" && (k==="ArrowUp"||k==="ArrowDown"))    { e.preventDefault(); nudge(dir*(k==="ArrowDown" ? step : -step)); }
+      if (k==="Home" || k==="Backspace")                     { e.preventDefault(); UI.clear(key); uiRefit(); UI.save(); }
+    });
+  }
+  document.querySelectorAll(".grip").forEach(makeSizer);
+  $("boxResetBtn").addEventListener("click", ()=>{ UI.reset(); uiRefit(); UI.save(); });
+  $("boxCopyBtn").addEventListener("click", async ev=>{
+    const v = UI.dump(), css = [], js = [];
+    for (const [k,d] of Object.entries(UI_DIMS)){
+      if (typeof v[k] !== "number") continue;
+      (d.css ? css : js).push(d.css ? `  ${d.css}: ${v[k]}px;` : `  ${k}: ${v[k]}px`);
+    }
+    const text = (css.length ? `.app {\n${css.join("\n")}\n}\n` : "")
+      + (js.length ? `/* canvas heights — bake into the mkTarget/mkTL aspect defaults:\n${js.join("\n")}\n*/\n` : "")
+      || "/* nothing dragged yet — every box is still at its built-in size */\n";
+    console.log(text);
+    try { await navigator.clipboard.writeText(text); } catch(e){ /* also logged above */ }
+    const b = ev.currentTarget, was = b.innerHTML;
+    b.innerHTML = "✓ Copied"; setTimeout(()=>{ b.innerHTML = was; }, 1400);
+  });
+
+  TGT.main=mkTarget("line",0.40,"lineH"); TGT.A=mkTarget("laneA",0.52,"laneH"); TGT.B=mkTarget("laneB",0.52,"laneH");
+  TLT.single=mkTL("tl",0,"tlH"); TLT.A=mkTL("laneA-tl",0.34,"laneTlH"); TLT.B=mkTL("laneB-tl",0.34,"laneTlH");
   $("layoutSel").innerHTML = LAYOUT_CHOICES.map(l=>`<option value="${l.name}">${l.title}</option>`).join("");
   $("layoutSel").value = currentLayout;
   // Cache the big in-browser C++ toolchain (+ app shell) in local storage so it
@@ -3390,7 +3579,7 @@ def run_one_control_cycle(machine, memory):
     catch (err){ document.getElementById("wasmErr").style.display="block"; console.error("layout load failed:", err); return; }
     fitAll(); reset(); injectTray();                // reset() builds per-lane wasm instances
     log(0,`${LAYOUT.title} loaded — real WASM controller · press Run`,"");
-    renderAll();
+    BOOTED = true; renderAll();
     requestAnimationFrame(frame);
   })();
 })();

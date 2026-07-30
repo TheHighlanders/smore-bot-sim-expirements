@@ -32,6 +32,16 @@ against a simulated world — the same path the integration test exercises.
     the active layout (the runtime analogue of the C++ compile-time contract
     check). Monaco + Pyodide load from a CDN, so the Studio needs network;
     the built-in views are fully offline.
+- **Resizable boxes** — every panel edge is draggable: the page width, the
+  inspector rail, the Studio's file-tree width, the line view / signal-history /
+  editor heights, the log heights, and the Compare-view lane split. Grips appear
+  on hover as a short teal
+  bar; drag, or focus one and use the arrow keys (`Shift` for fine steps).
+  Double-click a grip (or press `Home`) to restore that one dimension; **↺ Reset
+  boxes** in the dock restores all of them. Sizes persist per browser under the
+  `smores.ui.boxes.v1` localStorage key, and **⧉ Copy sizes** copies them as a
+  CSS snippet so a layout you like can be pasted into `index.html` as the new
+  default.
 
 ## Run it locally
 

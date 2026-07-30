@@ -170,7 +170,27 @@
   /* ---------- studio view (write your own controller) ---------- */
   .studio-only { display:none; }
   .app[data-view="studio"] .studio-only { display:flex; }
+  .learn-only { display:none; }
+  .app[data-view="learn"] .learn-only { display:block; }
+  .app[data-view="learn"] .compare-only,
+  .app[data-view="learn"] .single-only { display:none; }
   .app[data-view="studio"] .compare-only { display:none; }   /* studio keeps the single line view visible below the editor */
+
+  /* ---------- learn view (short pages that DO the thing) ---------- */
+  .learn { display:grid; grid-template-columns:190px 1fr; }
+  @media (max-width:900px){ .learn { grid-template-columns:1fr; } }
+  .learn-nav { border-right:1px solid var(--hair); background:var(--panel-2); padding:10px 0; }
+  .learn-nav button { display:block; width:100%; text-align:left; padding:9px 14px; border:0; background:none;
+    color:var(--muted); font:11.5px/1.3 var(--mono); cursor:pointer; }
+  .learn-nav button:hover { background:rgba(255,255,255,.04); color:var(--text); }
+  .learn-nav button.open { color:var(--teal); background:rgba(51,188,203,.10); box-shadow:inset 2px 0 0 var(--teal); }
+  .learn-page { padding:20px 26px 24px; max-width:70ch; }
+  .learn-page h3 { margin:0 0 10px; font-size:15px; color:var(--text); letter-spacing:.01em; }
+  .learn-page p { margin:0 0 12px; font-size:12.5px; line-height:1.65; color:var(--muted); }
+  .learn-page b { color:var(--text); font-weight:600; }
+  .learn-page .try { margin-top:16px; padding-top:14px; border-top:1px solid var(--hair); }
+  .learn-page .try-label { font:9px/1 var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--muted-2); }
+  .learn-page ul { margin:0 0 12px 18px; padding:0; font-size:12.5px; line-height:1.65; color:var(--muted); }
   .studio { flex-direction:column; gap:0; padding:0; overflow:hidden; }
   .studio-hd { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--hair); flex-wrap:wrap; }
   .studio-hd .spacer { flex:1; }
@@ -254,6 +274,11 @@
       <div class="stat"><span class="k">Done</span><span class="v" id="doneVal">0</span></div>
     </div>
   </header>
+
+  <section class="panel learn learn-only">
+    <nav class="learn-nav" id="learnNav"></nav>
+    <div class="learn-page" id="learnPage"></div>
+  </section>
 
   <section class="panel studio studio-only">
     <div class="studio-hd">
@@ -1636,7 +1661,8 @@ def run_one_control_cycle(machine, memory):
       <span class="glabel">View</span>
       <button class="btn ctrl-sel ctrl-active" id="viewSingle" title="One controller, full instrumentation">Single</button>
       <button class="btn ctrl-sel" id="viewCompare" title="Two controllers side by side on identical stimulus">Compare A/B</button>
-      <button class="btn ctrl-sel" id="viewStudio" title="Write your own controller (JavaScript / Python / C++)">✎ Studio</button>
+      <button class="btn ctrl-sel" id="viewStudio" title="Write your own controller (C++ / Python / JavaScript)">✎ Studio</button>
+      <button class="btn ctrl-sel" id="viewLearn" title="Four short pages explaining how this works">? Learn</button>
     </div>
     <div class="group">
       <button class="btn primary" id="playBtn" aria-label="Play or pause">▶ Run</button>
@@ -2303,12 +2329,20 @@ def run_one_control_cycle(machine, memory):
     if (TUNNEL) outs += ioRow("heater","out-heat","off","off");
     $("io-outputs").innerHTML = outs;
   }
+  const dispenserFaultLabel = (id, mode) =>
+    mode==="fail" ? `✕ ${id} FAIL` : mode==="double" ? `✚ ${id} ×2` : `◇ ${id}`;
   function buildFaultUI(){
     const host=$("faultBtns"); if(!host) return;
-    const parts = STATIONS.map((s,k)=>`<button class="btn" data-fault="disp" data-k="${k}" aria-pressed="false" title="Cycle ${s.id} dispenser: ok → FAIL (misfire) → DOUBLE">◇ ${s.id}</button>`);
+    // Read the CURRENT world so the buttons never disagree with the machine — a fault
+    // can also be switched on from a Learn page, not just by clicking here.
+    const w = engines && engines[0] ? engines[0].world : null;
+    const faultOf = k => (w ? w.faults[k] : "ok");
+    const blindOf = k => !!(w && w.blind[k]);
+    const jamOf   = k => !!(w && w.jam[k]);
+    const parts = STATIONS.map((s,k)=>`<button class="btn" data-fault="disp" data-k="${k}" aria-pressed="${faultOf(k)!=="ok"}" title="Cycle ${s.id} dispenser: ok → FAIL (misfire) → DOUBLE">${dispenserFaultLabel(s.id, faultOf(k))}</button>`);
     const mi=STATIONS.findIndex(s=>s.ingredient==="marshmallow"), ci=STATIONS.findIndex(s=>s.ingredient==="chocolate");
-    if(mi>=0) parts.push(`<button class="btn" data-fault="blind" data-k="${mi}" aria-pressed="false" title="Blind the ${STATIONS[mi].id} sensor — controller must dead-reckon">◎ blind ${STATIONS[mi].id}</button>`);
-    if(ci>=0) parts.push(`<button class="btn" data-fault="jam" data-k="${ci}" aria-pressed="false" title="Jam the ${STATIONS[ci].id} gate shut — tray gets stuck">🔒 jam ${STATIONS[ci].id}</button>`);
+    if(mi>=0) parts.push(`<button class="btn" data-fault="blind" data-k="${mi}" aria-pressed="${blindOf(mi)}" title="Blind the ${STATIONS[mi].id} sensor — the controller has to rely on its own guess">◎ blind ${STATIONS[mi].id}</button>`);
+    if(ci>=0) parts.push(`<button class="btn" data-fault="jam" data-k="${ci}" aria-pressed="${jamOf(ci)}" title="Jam the ${STATIONS[ci].id} gate shut — tray gets stuck">🔒 jam ${STATIONS[ci].id}</button>`);
     host.innerHTML = parts.join("");
     host.querySelectorAll("button").forEach(b=>b.addEventListener("click", onFault));
   }
@@ -2317,7 +2351,7 @@ def run_one_control_cycle(machine, memory):
     if(kind==="disp"){
       const cur=engines[0].world.faults[k], next = cur==="ok"?"fail":(cur==="fail"?"double":"ok");
       applyAll(w=>w.faults[k]=next); b.setAttribute("aria-pressed", next!=="ok");
-      b.textContent = next==="ok"?`◇ ${st.id}`:(next==="fail"?`✕ ${st.id} FAIL`:`✚ ${st.id} ×2`);
+      b.textContent = dispenserFaultLabel(st.id, next);
       log(sim.t*1000, `${st.id} dispenser → ${next==="ok"?"restored":next.toUpperCase()}`, "warn");
     } else if(kind==="blind"){
       const on=!engines[0].world.blind[k]; applyAll(w=>w.blind[k]=on); b.setAttribute("aria-pressed",on);
@@ -3004,6 +3038,105 @@ def run_one_control_cycle(machine, memory):
     DBG.pos=0; dbgShow();
   }
 
+
+  // =================== LEARN (four short pages that DO the thing) ===================
+  // Deliberately small: one screen each, and each ends in a button that runs the thing
+  // it just described. Prose competes with the simulation for attention and goes
+  // stale; the deeper material lives in docs/simulator/*.md for instructors.
+  const LEARN_PAGES = [
+    { key:"line", nav:"1 · The line", title:"How the line works",
+      body:`<p>A single belt carries trays past a row of <b>dispensers</b>, then through a
+        <b>heating tunnel</b>. On the sandwich layout a fourth dispenser after the tunnel drops
+        the top graham cracker.</p>
+      <p>Each dispenser has three parts:</p>
+      <ul>
+        <li>a <b>sensor</b> that can tell a tray is right here — and nothing more,</li>
+        <li>a <b>gate</b> that holds the tray still, because the belt never stops,</li>
+        <li>a <b>chute</b> that has to run for a moment before an ingredient actually falls.</li>
+      </ul>
+      <p>The important limitation: a sensor only sees a tray at one exact spot. Between the
+        sensors, nothing in the machine knows where a tray is.</p>`,
+      action:{ label:"▶ Put a tray on the belt", run:"inject" } },
+
+    { key:"cycle", nav:"2 · One cycle", title:"What your controller does each cycle",
+      body:`<p>Your controller is called about <b>fifty times a second</b>. Each call it does the
+        same three things: read the sensors, decide, then say what every motor and gate should
+        be doing.</p>
+      <p>It does <b>not</b> wait for anything. There is no "pause here until the tray arrives" —
+        if you need to wait, you remember that you are waiting and return, and you get asked
+        again a moment later.</p>
+      <p>Every cycle starts from a machine at rest: belt at its normal speed, every gate open,
+        nothing pouring. Your code then says only what should be <i>different</i> right now.
+        That way a forgotten line can never leave a chute running.</p>`,
+      action:{ label:"⏭ Run exactly one cycle", run:"step" } },
+
+    { key:"belief", nav:"3 · Belief vs reality", title:"What the controller believes",
+      body:`<p>Because nothing watches a tray between sensors, a controller that needs to know
+        where a tray is has to <b>keep its own guess</b> and move that guess forward by how far
+        the belt should have carried it. The guess is always a little wrong — the belt slips —
+        so it <b>drifts</b>, and gets corrected the moment a sensor proves it wrong. The
+        <b>drift_mm</b> value in the Watch panel is exactly that correction.</p>
+      <p>The same gap appears with ingredients. Running a chute is not the same as an
+        ingredient falling. A controller that never checks will happily believe it placed a
+        graham cracker that is not there, and ship the s'more anyway.</p>
+      <p>That is the difference between <b>open-loop</b> (assume it worked) and
+        <b>closed-loop</b> (check the drop sensor, and retry). Compare A/B runs both at once on
+        the same fault.</p>`,
+      action:{ label:"✕ Break the graham dispenser and watch", run:"fail" } },
+
+    { key:"inside", nav:"4 · Looking inside", title:"Looking inside a running controller",
+      body:`<p>There are three ways to see what your code is thinking:</p>
+      <ul>
+        <li><b>Tray tracking</b> shows every field your controller stores about each tray. You
+          write no extra code for this — the app is told how a tray record is arranged.</li>
+        <li><b>Watch</b> shows values you publish yourself with <b>WATCH(name, value)</b> in C++
+          or <b>machine.watch(name, value)</b> in Python. Use it for numbers that exist only for
+          a moment inside one cycle, like drift_mm.</li>
+        <li><b>Debug</b> stops on each line of one cycle so you can step through your own
+          reasoning. In C++ you can also put a <b>BREAKPOINT()</b> exactly where you want it.</li>
+      </ul>
+      <p>Everything is repeatable: the same run always produces the same numbers, so a bug you
+        just saw will happen again the same way.</p>`,
+      action:{ label:"🐞 Open the Studio and start debugging", run:"debug" } },
+  ];
+  let learnOpen = "line";
+
+  function renderLearn(){
+    const nav = $("learnNav"), page = $("learnPage");
+    if (!nav || !page) return;
+    nav.innerHTML = LEARN_PAGES.map(p =>
+      `<button data-key="${p.key}" class="${p.key===learnOpen?"open":""}">${p.nav}</button>`).join("");
+    nav.querySelectorAll("button").forEach(b => b.addEventListener("click", ()=>{ learnOpen = b.dataset.key; renderLearn(); }));
+
+    const p = LEARN_PAGES.find(x => x.key === learnOpen) || LEARN_PAGES[0];
+    page.innerHTML = `<h3>${p.title}</h3>${p.body}`
+      + `<div class="try"><div class="try-label">Try it</div>`
+      + `<button class="btn primary" id="learnTry" style="margin-top:8px">${p.action.label}</button></div>`;
+    $("learnTry").addEventListener("click", ()=>runLearnAction(p.action.run));
+  }
+
+  // Each page's button actually drives the simulation, so the explanation and the thing
+  // being explained are never out of step.
+  async function runLearnAction(what){
+    if (what === "inject"){ setView("single"); injectTray(); log(sim.t*1000, "a tray was put on the belt", ""); renderAll(); return; }
+    if (what === "step"){ setView("single"); stepOnce(); return; }
+    if (what === "fail"){
+      setView("single");
+      applyAll(w => w.faults[0] = "fail");
+      buildFaultUI();
+      log(sim.t*1000, "graham dispenser set to FAIL — the controller is not told", "warn");
+      sim.playing = true; $("playBtn").innerHTML = "⏸ Pause";
+      return;
+    }
+    if (what === "debug"){
+      setView("studio");
+      await initMonaco().catch(()=>{});
+      if (!(await studioLoad())) return;
+      dbgStart();
+      return;
+    }
+  }
+
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
   $("playBtn").addEventListener("click", async ()=>{
@@ -3040,6 +3173,8 @@ def run_one_control_cycle(machine, memory):
     $("viewSingle").classList.toggle("ctrl-active", mode==="single");
     $("viewCompare").classList.toggle("ctrl-active", mode==="compare");
     $("viewStudio").classList.toggle("ctrl-active", mode==="studio");
+    $("viewLearn").classList.toggle("ctrl-active", mode==="learn");
+    if (mode==="learn"){ renderLearn(); return; }        // reading changes nothing
     if (mode==="studio"){
       $("studioLayoutName").textContent = LAYOUT.title || LAYOUT.name;
       fitAll();
@@ -3051,6 +3186,7 @@ def run_one_control_cycle(machine, memory):
   $("viewSingle").addEventListener("click", ()=>setView("single"));
   $("viewCompare").addEventListener("click", ()=>setView("compare"));
   $("viewStudio").addEventListener("click", ()=>setView("studio"));
+  $("viewLearn").addEventListener("click", ()=>setView("learn"));
 
   $("applyBtn").addEventListener("click", applyLayoutEdit);
   $("exportBtn").addEventListener("click", ()=>{

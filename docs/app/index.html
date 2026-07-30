@@ -93,6 +93,12 @@
 
   .lineview .canvas-wrap { padding:8px 8px 4px; }
   canvas#line { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
+  .scrubbar { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .scrubbar input[type=range] { width:220px; }
+  .app.scrubbing .scrubbar .hint { color:var(--ember); }
+  .app.scrubbing .lineview { box-shadow:inset 0 0 0 1px var(--ember); }
+  #trayFields .io-row .lbl { max-width:60%; }
+  .tray-head { margin:6px 0 2px; font:600 10px/1 var(--mono); letter-spacing:.08em; color:var(--teal); }
   .tl-wrap { padding:8px 12px 12px; }
   canvas#tl { display:block; width:100%; height:auto; border-radius:8px; background:var(--screen); }
 
@@ -171,13 +177,13 @@
   .studio-only { display:none; }
   .app[data-view="studio"] .studio-only { display:flex; }
   .learn-only { display:none; }
-  .app[data-view="learn"] .learn-only { display:block; }
+  .app[data-view="learn"] .learn-only { display:grid; }
   .app[data-view="learn"] .compare-only,
   .app[data-view="learn"] .single-only { display:none; }
   .app[data-view="studio"] .compare-only { display:none; }   /* studio keeps the single line view visible below the editor */
 
   /* ---------- learn view (short pages that DO the thing) ---------- */
-  .learn { display:grid; grid-template-columns:190px 1fr; }
+  .learn { grid-template-columns:190px 1fr; }
   @media (max-width:900px){ .learn { grid-template-columns:1fr; } }
   .learn-nav { border-right:1px solid var(--hair); background:var(--panel-2); padding:10px 0; }
   .learn-nav button { display:block; width:100%; text-align:left; padding:9px 14px; border:0; background:none;
@@ -1608,6 +1614,11 @@ def run_one_control_cycle(machine, memory):
       </section>
 
       <section class="panel">
+        <div class="panel-hd"><h2>Tray inspector</h2><span class="hint">every field your controller stores</span></div>
+        <div id="trayFields" class="io-col" style="padding:8px 14px"></div>
+      </section>
+
+      <section class="panel">
         <div class="panel-hd"><h2>Watch</h2><span class="hint">WATCH() from inside the loop</span></div>
         <div class="io-col" id="watchRows" style="padding:8px 14px"></div>
       </section>
@@ -1620,7 +1631,13 @@ def run_one_control_cycle(machine, memory):
   </main>
 
   <section class="panel timeline single-only">
-    <div class="panel-hd"><h2>Signal history</h2><span class="hint">inputs &amp; outputs over time — whole run in one view</span></div>
+    <div class="panel-hd"><h2>Signal history</h2>
+      <span class="scrubbar">
+        <button class="btn" id="scrubLive" title="Return to the live simulation">⏵ Live</button>
+        <input type="range" id="scrub" min="0" max="0" value="0" step="1" aria-label="Rewind through the run">
+        <span class="hint" id="scrubLabel">live</span>
+      </span>
+    </div>
     <div class="tl-wrap"><canvas id="tl" width="1600" height="214" role="img"
       aria-label="Timeline of controller input and output signals over the whole run"></canvas></div>
   </section>
@@ -1725,7 +1742,7 @@ def run_one_control_cycle(machine, memory):
   let STATIONS = [];               // dispensers: {id,key,name,pos,color,ingredient,servos,after_tunnel,is_cap}
   let TUNNEL = null;               // {entry,exit} or null
   let BELT_LEN = 1200, NOMINAL_SPEED = 110;
-  let IN_OFF = {}, OUT_OFF = {}, TRACK_OFF = {}, TRACK_SIZE = 0, STATUS_NAMES = [], N_DISP = 0;
+  let IN_OFF = {}, OUT_OFF = {}, TRACK_OFF = {}, TRACK_FIELDS = [], TRACK_SIZE = 0, STATUS_NAMES = [], N_DISP = 0;
 
   // world params (layout-independent physics)
   const ACTUAL_SLIP = 0.965;      // world moves a bit slower than commanded -> drift
@@ -1768,6 +1785,7 @@ def run_one_control_cycle(machine, memory):
     IN_OFF  = Object.fromEntries(meta.offsets.inputs.fields.map(f=>[f.name,f.offset]));
     OUT_OFF = Object.fromEntries(meta.offsets.outputs.fields.map(f=>[f.name,f.offset]));
     TRACK_OFF = Object.fromEntries(meta.offsets.track.fields.map(f=>[f.name,f.offset]));
+    TRACK_FIELDS = meta.offsets.track.fields;
     TRACK_SIZE = meta.offsets.track.size;
     STATUS_NAMES = meta.offsets.statusNames;
     currentLayout = name;
@@ -1803,6 +1821,24 @@ def run_one_control_cycle(machine, memory):
   // GENERATED descriptor (TRACK_OFF/TRACK_SIZE). No hand-written per-field
   // accessor on the C++ side, so every field is visible and nothing drifts when
   // the layout's dispenser count changes. HAL.md §H-8.1.
+  // Read one field out of wasm memory using its generated type, so a field ADDED to
+  // the layout's tray record shows up in the inspector with no JS change at all.
+  function readTrackField(dv, at, field){
+    const one = (off) => {
+      switch (field.type) {
+        case "f32":  return dv.getFloat32(off, true);
+        case "u32":  return dv.getUint32(off, true);
+        case "u8":   return dv.getUint8(off);
+        case "bool": return dv.getUint8(off) !== 0;
+        case "stat": return STATUS_NAMES[dv.getInt32(off, true)] || "moving";
+        default:     return dv.getInt32(off, true);       // i32
+      }
+    };
+    if (!field.count) return one(at + field.offset);
+    const out = [];
+    for (let i = 0; i < field.count; i++) out.push(one(at + field.offset + i*field.elemSize));
+    return out;
+  }
   function decodeTracks(inst){
     const n = inst.exports.track_count ? inst.exports.track_count() : 0;
     if (!n) return [];
@@ -1810,16 +1846,14 @@ def run_one_control_cycle(machine, memory):
     if (!base) return [];
     const dv = new DataView(inst.exports.memory.buffer), arr = [];
     for (let i=0;i<n;i++){
-      const p = base + i*stride;
-      const placed = []; for (let k=0;k<N_DISP;k++) placed.push(dv.getInt32(p+TRACK_OFF.placed+4*k, true));
-      arr.push({
-        id:      dv.getInt32(p+TRACK_OFF.id, true),
-        estPos:  dv.getFloat32(p+TRACK_OFF.est_pos_mm, true),
-        stage:   dv.getInt32(p+TRACK_OFF.stage, true),
-        status:  STATUS_NAMES[dv.getInt32(p+TRACK_OFF.status, true)] || "moving",
-        hold:    dv.getInt32(p+TRACK_OFF.hold, true),
-        retries: dv.getInt32(p+TRACK_OFF.retries, true),
-        placed,
+      const at = base + i*stride;
+      const all = {};
+      for (const field of TRACK_FIELDS) all[field.name] = readTrackField(dv, at, field);
+      arr.push({ ...all,
+        id: all.id|0, estPos: +all.est_pos_mm || 0, stage: all.stage|0,
+        status: all.status, hold: all.hold, retries: all.retry_count ?? all.retries,
+        placed: all.placed || all.ingredients_placed || [],
+        all,                                   // every field, for the inspector
       });
     }
     return arr;
@@ -1876,6 +1910,7 @@ def run_one_control_cycle(machine, memory):
 
   function reset(){
     clearWatches();                 // watches are sticky within a run
+    clearHistory();                 // a new run is a new history
     engines = viewMode==="studio"  ? [ activeLang()==="cpp" ? makeCppEngine(STUDIO.cppModule) : makeJsEngine() ]
             : viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)]
             :                        [makeEngine(modeA)];
@@ -2014,6 +2049,7 @@ def run_one_control_cycle(machine, memory):
       worldStep(e.world, e.ctrl, e.ctrl.out, STEP);
       pushSample(e, inp, e.ctrl.out);
       tally(e);
+      if (e === engines[0]) recordSnapshot(e, inp);
     }
   }
   function advance(realDt){ sim.acc += realDt*sim.speed; while (sim.acc>=STEP){ sim.acc-=STEP; stepLanes(); } }
@@ -2229,27 +2265,58 @@ def run_one_control_cycle(machine, memory):
   }
 
   function renderSingle(){
+    if (scrubIndex !== null) return renderRemembered();   // showing a remembered moment
     const e=engines[0]; activate(e); liveInputs=senseInputs(e.world);
     setCanvas(TGT.main); drawLine(); setTL(TLT.single); drawTimeline(e.hist);
     updateTopbar(e);
-    for (let k=0;k<N_DISP;k++) setIO("in-s"+k, liveInputs.sense[k]);
-    if (TUNNEL){ setIO("in-te",liveInputs.tunnel_entry); setIO("in-tx",liveInputs.tunnel_exit);
-      $("in-temp").textContent=Math.round(liveInputs.tunnel_temp)+"°"; $("in-temp").className="val"+(e.world.heaterOn?" hot":""); }
-    $("out-belt").textContent=Math.round(e.ctrl.out.belt);
-    for (let k=0;k<N_DISP;k++){ const el=$("out-g"+k); if(!el) continue; const jam=e.world.jam[k]; el.textContent=jam?"JAM":(e.ctrl.out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(e.ctrl.out.gate[k]?"":" off")); }
-    const disp = e.ctrl.out.dispense.map((d,i)=>d?STATIONS[i].id:null).filter(Boolean);
+    drawIoRows(liveInputs, e.ctrl.out, e.world);
+    drawWatches(); drawTrays(); drawTrayFields(); drawLog(e.log, "log");
+  }
+
+  // Shared by the live view and by a rewound moment, so both show the same thing.
+  function drawIoRows(inputs, out, w){
+    for (let k=0;k<N_DISP;k++) setIO("in-s"+k, inputs.sense[k]);
+    if (TUNNEL){ setIO("in-te",inputs.tunnel_entry); setIO("in-tx",inputs.tunnel_exit);
+      $("in-temp").textContent=Math.round(inputs.tunnel_temp)+"°"; $("in-temp").className="val"+(w.heaterOn?" hot":""); }
+    $("out-belt").textContent=Math.round(out.belt);
+    for (let k=0;k<N_DISP;k++){ const el=$("out-g"+k); if(!el) continue; const jam=w.jam && w.jam[k];
+      el.textContent=jam?"JAM":(out.gate[k]?"open":"closed"); el.className="val"+(jam?" hot":(out.gate[k]?"":" off")); }
+    const disp = out.dispense.map((d,i)=>d?STATIONS[i].id:null).filter(Boolean);
     $("out-disp").textContent = disp.length?disp.join(","):"—"; $("out-disp").className="val"+(disp.length?" on":" off");
-    $("out-heat").textContent = e.ctrl.out.heater?"ON":"off"; $("out-heat").className="val"+(e.ctrl.out.heater?" hot":" off");
-    drawWatches(); drawTrays(); drawLog(e.log, "log");
+    $("out-heat").textContent = out.heater?"ON":"off"; $("out-heat").className="val"+(out.heater?" hot":" off");
   }
   // Latest WATCH values. `drift_mm` is the headline one: how far dead-reckoning
   // had drifted when a sensor finally saw the tray.
-  function drawWatches(){
+  function drawWatches(values){
     const el=$("watchRows"); if(!el) return;
-    const keys=Object.keys(WATCHES);
+    const source = values || WATCHES;
+    const keys=Object.keys(source);
     el.innerHTML = keys.length
-      ? keys.map(k=>`<div class="io-row"><span class="lbl">${k}</span><span class="val">${fmtWatch(WATCHES[k])}</span></div>`).join("")
+      ? keys.map(k=>`<div class="io-row"><span class="lbl">${k}</span><span class="val">${fmtWatch(source[k])}</span></div>`).join("")
       : `<div class="io-row"><span class="lbl" style="color:var(--muted-2)">no values published yet</span><span class="val off">—</span></div>`;
+  }
+
+  // Every field the controller stores about each tray. Nothing here is hand-picked:
+  // for C++ the fields come from the generated tray record, and for Python/JavaScript
+  // they are whatever the student put on their tray object.
+  const showValue = v => Array.isArray(v) ? "[" + v.map(showValue).join(", ") + "]"
+                       : typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(1))
+                       : String(v);
+  function drawTrayFields(tracks){
+    const el=$("trayFields"); if(!el) return;
+    const list = tracks || (ctrl ? ctrl.tracks : []);
+    if (!list.length){
+      el.innerHTML = `<div class="io-row"><span class="lbl" style="color:var(--muted-2)">no trays tracked — a controller that keeps no memory shows nothing here</span></div>`;
+      return;
+    }
+    el.innerHTML = list.map(t => {
+      const fields = t.all && Object.keys(t.all).length ? t.all : t;
+      const rows = Object.keys(fields)
+        .filter(k => k !== "all")
+        .map(k => `<div class="io-row"><span class="lbl">${k}</span><span class="val">${showValue(fields[k])}</span></div>`)
+        .join("");
+      return `<div class="tray-head">tray #${t.id}</div>${rows}`;
+    }).join("");
   }
 
   function renderCompare(){
@@ -2663,12 +2730,16 @@ def run_one_control_cycle(machine, memory):
   const firstDefined = (...values) => values.find(v => v !== undefined && v !== null);
   function normTrack(t){
     const placed = firstDefined(t.ingredientsWeBelieveWePlaced, t.ingredients_placed, t.placed);
+    // Whatever the student chose to store — the inspector shows all of it.
+    const all = {};
+    for (const [k,v] of Object.entries(t)) if (typeof v !== "function") all[k] = v;
     return {
       id: t.id|0,
       estPos: +firstDefined(t.guessedPositionMm, t.guessed_position_mm, t.estPos, 0) || 0,
       stage: firstDefined(t.stepsFinished, t.steps_finished, t.stage, 0)|0,
       status: _statusName(t.status),
       placed: Array.isArray(placed) ? placed.map(x=>x|0) : Array(N_DISP).fill(0),
+      all,
     };
   }
   const traysHeldInMemory = memory => (memory && (memory.traysBeingTracked || memory.trays_being_tracked || memory.tracks)) || [];
@@ -2814,6 +2885,7 @@ def run_one_control_cycle(machine, memory):
     worldStep(e.world, e.ctrl, e.ctrl.out, STEP);
     pushSample(e, DBG.inp, e.ctrl.out); tally(e);
     sim.t += STEP; sim.tick++;
+    recordSnapshot(e, DBG.inp);
     renderAll(); DBG.primeFn();
   }
   async function dbgStart(){
@@ -3039,6 +3111,91 @@ def run_one_control_cycle(machine, memory):
   }
 
 
+
+  // =================== TIME TRAVEL ===================
+  // The simulation is deterministic, so a run can simply be REMEMBERED and replayed.
+  // "Why did it do that?" is far easier to answer by dragging backwards than by
+  // stepping forwards and hoping to catch the moment again.
+  //
+  // We keep one small snapshot per control cycle: enough to redraw the line exactly as
+  // it was, plus what the controller believed and published at that instant.
+  const HISTORY_LIMIT = 6000;             // ~2 minutes at 50 cycles/second
+  let RECORD = [];
+  let scrubIndex = null;                  // null = showing the live simulation
+
+  function recordSnapshot(e, inp){
+    RECORD.push({
+      t: sim.t, tick: sim.tick,
+      trays: e.world.trays.map(tr => ({ id:tr.id, pos:tr.pos, counts:(tr.counts||[]).slice(),
+                                        toast:tr.toast||0, _blocked:!!tr._blocked, energy:tr.energy||0 })),
+      tracks: e.ctrl.tracks.map(t => ({ ...t })),
+      out: { belt:e.ctrl.out.belt, gate:e.ctrl.out.gate.slice(), dispense:e.ctrl.out.dispense.slice(),
+             heater:e.ctrl.out.heater, tunnelGateOpen:e.ctrl.out.tunnelGateOpen },
+      inputs: inp,
+      temp: e.world.temp, heaterOn: e.world.heaterOn,
+      watches: { ...WATCHES },
+      logLength: e.log.length,
+    });
+    if (RECORD.length > HISTORY_LIMIT) RECORD.shift();
+    if (scrubIndex === null) syncScrubControl();
+  }
+  function clearHistory(){ RECORD = []; scrubIndex = null; syncScrubControl(); }
+
+  function syncScrubControl(){
+    const slider = $("scrub"), label = $("scrubLabel");
+    if (!slider || !label) return;
+    const last = Math.max(0, RECORD.length - 1);
+    slider.max = String(last);
+    if (scrubIndex === null) {
+      slider.value = String(last);
+      label.textContent = RECORD.length ? "live" : "nothing recorded yet";
+    } else {
+      slider.value = String(scrubIndex);
+      const snap = RECORD[scrubIndex];
+      label.textContent = `rewound to ${snap.t.toFixed(2)}s (cycle ${snap.tick} of ${RECORD[last].tick})`;
+    }
+    APP.classList.toggle("scrubbing", scrubIndex !== null);
+  }
+
+  // Show a remembered moment. We hand the existing renderers stand-in world/controller
+  // objects, so every panel — line view, tray table, inspector, watch, log — shows that
+  // instant with no special cases.
+  function showRemembered(index){
+    if (!RECORD.length) return;
+    scrubIndex = Math.max(0, Math.min(index, RECORD.length - 1));
+    sim.playing = false; $("playBtn").innerHTML = "▶ Run";
+    renderRemembered();
+    syncScrubControl();
+  }
+  // Draw the remembered moment. This must be repeatable: resizing the window clears
+  // the canvas and asks for a redraw, and the answer has to be the same moment again.
+  function renderRemembered(){
+    const snap = RECORD[scrubIndex]; if (!snap) return;
+    const live = engines[0];
+
+    world = { ...live.world, trays: snap.trays, temp: snap.temp, heaterOn: snap.heaterOn };
+    ctrl  = { out: snap.out, tracks: snap.tracks };
+    liveInputs = snap.inputs;
+
+    setCanvas(TGT.main); drawLine();
+    setTL(TLT.single);   drawTimeline(live.hist);
+    $("tickVal").textContent = snap.tick;
+    $("clockVal").textContent = snap.t.toFixed(1)+"s";
+    $("beltVal").textContent = Math.round(snap.out.belt);
+    $("trayCountVal").textContent = snap.tracks.filter(t=>t.status!=="done"&&t.status!=="lost").length;
+    $("doneVal").textContent = snap.tracks.filter(t=>t.status==="done").length;
+    drawIoRows(snap.inputs, snap.out, world);
+    drawWatches(snap.watches);
+    drawTrays(); drawTrayFields(snap.tracks);
+    drawLog(live.log.slice(0, snap.logLength), "log");
+  }
+  function returnToLive(){
+    scrubIndex = null;
+    APP.classList.remove("scrubbing");
+    activate(engines[0]);
+    renderAll(); syncScrubControl();
+  }
+
   // =================== LEARN (four short pages that DO the thing) ===================
   // Deliberately small: one screen each, and each ends in a button that runs the thing
   // it just described. Prose competes with the simulation for attention and goes
@@ -3095,8 +3252,10 @@ def run_one_control_cycle(machine, memory):
         <li><b>Debug</b> stops on each line of one cycle so you can step through your own
           reasoning. In C++ you can also put a <b>BREAKPOINT()</b> exactly where you want it.</li>
       </ul>
-      <p>Everything is repeatable: the same run always produces the same numbers, so a bug you
-        just saw will happen again the same way.</p>`,
+      <p>Everything is repeatable: the same run always produces the same numbers. That is why
+        you can also <b>rewind</b> — drag the slider next to Signal history and the whole line,
+        including what the controller believed at that instant, goes back to that moment. It is
+        usually easier to drag back to a mistake than to catch it going forwards.</p>`,
       action:{ label:"🐞 Open the Studio and start debugging", run:"debug" } },
   ];
   let learnOpen = "line";
@@ -3140,9 +3299,11 @@ def run_one_control_cycle(machine, memory):
   // =================== CONTROLS ===================
   const applyAll = fn => engines.forEach(e=>fn(e.world));
   $("playBtn").addEventListener("click", async ()=>{
+    if (scrubIndex !== null) returnToLive();      // can't run from the past
     if (viewMode==="studio" && !sim.playing){ if(!(await studioLoad())) return; }  // (re)compile current code, then play
     sim.playing=!sim.playing; $("playBtn").innerHTML = sim.playing?"⏸ Pause":"▶ Run"; });
   $("stepBtn").addEventListener("click", async ()=>{ sim.playing=false; $("playBtn").innerHTML="▶ Run";
+    if (scrubIndex !== null) returnToLive();
     if (viewMode==="studio" && !(engines[0] && (engines[0].mode==="js" || engines[0].mode==="cpp"))){ if(!(await studioLoad())) return; }
     stepOnce(); });
   $("resetBtn").addEventListener("click", async ()=>{
@@ -3187,6 +3348,8 @@ def run_one_control_cycle(machine, memory):
   $("viewCompare").addEventListener("click", ()=>setView("compare"));
   $("viewStudio").addEventListener("click", ()=>setView("studio"));
   $("viewLearn").addEventListener("click", ()=>setView("learn"));
+  $("scrub").addEventListener("input", e=>showRemembered(+e.target.value));
+  $("scrubLive").addEventListener("click", returnToLive);
 
   $("applyBtn").addEventListener("click", applyLayoutEdit);
   $("exportBtn").addEventListener("click", ()=>{

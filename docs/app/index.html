@@ -173,13 +173,23 @@
   .app[data-view="studio"] .compare-only { display:none; }   /* studio keeps the single line view visible below the editor */
   .studio { flex-direction:column; gap:0; padding:0; overflow:hidden; }
   .studio-hd { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--hair); flex-wrap:wrap; }
-  .lang-tabs { display:flex; gap:4px; }
-  .lang-tab { font:600 11px/1 var(--mono); letter-spacing:.04em; padding:7px 12px; border:1px solid var(--hair); border-radius:6px 6px 0 0;
-    background:var(--panel-2); color:var(--muted); cursor:pointer; }
-  .lang-tab.active { color:var(--teal); border-color:var(--teal); background:rgba(51,188,203,.08); }
-  .lang-tab:disabled { opacity:.45; cursor:not-allowed; }
   .studio-hd .spacer { flex:1; }
-  #editor { width:100%; height:420px; }
+  .studio-body { display:grid; grid-template-columns:214px 1fr; align-items:stretch; }
+  @media (max-width:900px){ .studio-body { grid-template-columns:1fr; } }
+  .studio-main { min-width:0; }
+  #editor { width:100%; height:440px; }
+  .file-tree { border-right:1px solid var(--hair); background:var(--panel-2); padding:8px 0;
+    max-height:calc(440px + 40px); overflow-y:auto; font-family:var(--mono); font-size:11.5px; }
+  .file-group { padding:10px 12px 4px; font-size:8.5px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--muted-2); }
+  .file-item { display:flex; align-items:center; gap:6px; width:100%; text-align:left; cursor:pointer;
+    padding:5px 12px; border:0; background:none; color:var(--muted); font:inherit; }
+  .file-item:hover { background:rgba(255,255,255,.04); color:var(--text); }
+  .file-item.open { background:rgba(51,188,203,.10); color:var(--teal); box-shadow:inset 2px 0 0 var(--teal); }
+  .file-item.generated { color:var(--muted-2); font-style:italic; }
+  .file-item .runs { margin-left:auto; font-size:8.5px; letter-spacing:.08em; color:var(--good); }
+  .file-item .ro   { margin-left:auto; font-size:8.5px; color:var(--muted-2); }
+  .file-open-name { font:600 11.5px/1 var(--mono); color:var(--text); letter-spacing:.02em; }
   .studio-status { padding:8px 14px; border-top:1px solid var(--hair); font:11px/1.5 var(--mono); color:var(--muted); min-height:20px;
     white-space:pre-wrap; max-height:150px; overflow-y:auto; }
   .studio-status.ok { color:var(--good); }
@@ -247,28 +257,27 @@
 
   <section class="panel studio studio-only">
     <div class="studio-hd">
-      <div class="lang-tabs" id="langTabs">
-        <button class="lang-tab active" data-lang="js">JavaScript</button>
-        <button class="lang-tab" data-lang="python">Python</button>
-        <button class="lang-tab" data-lang="cpp">C++</button>
-        <button class="lang-tab" data-file="layout" title="The machine: topology + hardware wiring. Validated live; Apply regenerates the contract.">layout.json</button>
-        <button class="lang-tab" data-file="hal" title="The HAL and its implementations — where slots and channels live">HAL ▾</button>
-      </div>
-      <select id="halPick" class="btn" style="display:none;padding:6px 8px;font-size:11px"></select>
-      <span class="studio-note" id="studioLang">write a controller for the <b id="studioLayoutName">…</b> layout</span>
+      <span class="file-open-name" id="fileOpenName">Controller</span>
+      <span class="studio-note" id="fileNote">…</span>
+      <span class="studio-note">· machine: <b id="studioLayoutName">…</b></span>
       <span class="spacer"></span>
-      <button class="btn" id="dbgBtn" title="Debug: step through your controller's decision for one control cycle, line by line">🐞 Debug</button>
+      <button class="btn" id="dbgBtn" title="Debug: stop on each line of your controller for one cycle">🐞 Debug</button>
       <button class="btn" id="dbgStepLine" title="Step one source line" disabled>⤓ Line</button>
       <button class="btn" id="dbgStepTick" title="Finish this cycle (advance the line one tick)" disabled>⏭ Tick</button>
       <button class="btn" id="dbgStop" title="Stop debugging" disabled>■ Stop</button>
       <button class="btn" id="applyBtn" style="display:none" title="Validate this layout and regenerate the contract from it">✔ Apply layout</button>
       <button class="btn" id="exportBtn" style="display:none" title="Download layout.json so it can be committed next to your controller">⭳ Export</button>
-      <button class="btn" id="checkBtn" title="Validate this controller against the active layout (the runtime equivalent of the C++ compile-time check)">✓ Check vs layout</button>
-      <button class="btn" id="revertBtn" title="Restore the starter file">↺ Revert</button>
+      <button class="btn" id="checkBtn" title="Check your controller against the layout it will run on">✓ Check vs layout</button>
+      <button class="btn" id="revertBtn" title="Restore this file to how it shipped">↺ Revert</button>
     </div>
-    <div id="editor"></div>
-    <div class="studio-status" id="studioStatus">Monaco loading…</div>
-    <div id="dbgVars" style="display:none"></div>
+    <div class="studio-body">
+      <nav class="file-tree" id="fileTree" aria-label="Project files"></nav>
+      <div class="studio-main">
+        <div id="editor"></div>
+        <div class="studio-status" id="studioStatus">Monaco loading…</div>
+        <div id="dbgVars" style="display:none"></div>
+      </div>
+    </div>
   </section>
 
   <!-- Starter controllers (inert; read as text). All three target the same §4
@@ -464,7 +473,7 @@ function findTrayWeThinkIsNear(memory, positionMm) {
 }
 </script>
 
-  <script type="text/plain" id="starter-python"># This is the brain of the s'mores line, written in Python.
+  <script type="text/plain" id="starter-python-2"># This is the brain of the s'mores line, written in Python.
 #
 # The line cannot see a tray between its sensors, so a big part of the job is
 # remembering where you believe each tray is, and correcting that belief whenever a
@@ -642,7 +651,7 @@ def find_tray_we_think_is_near(memory, position_mm):
     return closest_tray
 </script>
 
-  <script type="text/plain" id="starter-cpp">// This is the brain of the s'mores line, written in C++ and compiled to
+  <script type="text/plain" id="starter-cpp-2">// This is the brain of the s'mores line, written in C++ and compiled to
 // WebAssembly right here in your browser. The same style of code runs on the real
 // ProductivityOpen controller.
 //
@@ -876,6 +885,662 @@ void runOneControlCycle() {
 }
 
 } // extern "C"
+</script>
+
+  <script type="text/plain" id="starter-cpp-1">// LEVEL 1 — the simplest controller that makes s'mores.
+//
+// It only REACTS. When a sensor says "a tray is here", it holds the tray, runs that
+// dispenser for a moment, then lets the tray go. It keeps no memory of where trays
+// are, so it never has to guess.
+//
+// Because it remembers nothing, the Tray tracking table stays empty while this runs.
+// That is not a bug — it is the whole reason Level 2 exists. A real line cannot see a
+// tray between its sensors, so if you ever need to know where a tray IS, you have to
+// remember it yourself.
+
+#include "Contract.h"
+#include "State.h"
+#include "Watch.h"
+using namespace smores;
+
+extern "C" __attribute__((import_module("env"), import_name("host_log")))
+void host_log(const char* kind, const char* message);
+
+static Inputs  sensorReadings;         // what the sensors see right now
+static Outputs commandsToTheMachine;   // what you want the machine to do
+
+// One small piece of memory per dispenser, so we know a dispenser is mid-pour.
+static bool     dispenserIsPouring[layout::N_DISP];
+static unsigned stopPouringAtMs[layout::N_DISP];
+static bool     sensorSawTrayLastTime[layout::N_DISP];
+
+static bool     tunnelIsToasting = false;
+static unsigned stopToastingAtMs = 0;
+static bool     tunnelSawTrayLastTime = false;
+
+static const unsigned HOW_LONG_TO_POUR_MS  = 650;
+static const unsigned HOW_LONG_TO_TOAST_MS = 3800;
+
+extern "C" {
+
+// These let the app read and write the memory above. You do not need to change them.
+Inputs*      inputs_ptr()   { return &sensorReadings; }
+Outputs*     outputs_ptr()  { return &commandsToTheMachine; }
+int          track_count()  { return 0; }        // this version remembers no trays
+const Track* tracks_ptr()   { return nullptr; }
+int          track_stride() { return (int)sizeof(Track); }
+
+// The app calls this many times a second.
+void runOneControlCycle() {
+    unsigned clockMs = sensorReadings.now_ms;
+
+    // Start from a machine at rest: belt running, every gate open, nothing pouring.
+    // This is the only loop in the file: it just repeats the same setup per dispenser.
+    commandsToTheMachine.belt_speed = layout::NOMINAL_SPEED;
+    for (int dispenser = 0; dispenser < layout::N_DISP; dispenser++) {
+        commandsToTheMachine.gate_open[dispenser] = true;
+        commandsToTheMachine.dispense[dispenser] = false;
+    }
+    commandsToTheMachine.tunnel_gate_open = true;
+    commandsToTheMachine.heater = false;
+
+    for (int dispenser = 0; dispenser < layout::N_DISP; dispenser++) {
+        bool sensorSeesTrayNow = sensorReadings.sense[dispenser];
+        bool trayJustArrived = sensorSeesTrayNow && !sensorSawTrayLastTime[dispenser];
+
+        if (trayJustArrived && !dispenserIsPouring[dispenser]) {
+            dispenserIsPouring[dispenser] = true;
+            stopPouringAtMs[dispenser] = clockMs + HOW_LONG_TO_POUR_MS;
+            host_log("evt", "a tray arrived, starting to pour");
+        }
+
+        if (dispenserIsPouring[dispenser]) {
+            commandsToTheMachine.gate_open[dispenser] = false;   // hold the tray still
+            commandsToTheMachine.dispense[dispenser] = true;     // run the chute
+
+            if (clockMs >= stopPouringAtMs[dispenser]) {
+                dispenserIsPouring[dispenser] = false;           // done: gate reopens above
+            }
+        }
+
+        sensorSawTrayLastTime[dispenser] = sensorSeesTrayNow;
+    }
+
+    if (layout::HAS_TUNNEL) {
+        // Only START when the beam FIRST sees the tray. Without this the tray is still
+        // sitting on the beam when toasting ends, so it would start toasting again
+        // immediately and never leave the tunnel.
+        bool tunnelSeesTrayNow = sensorReadings.tunnel_entry;
+        bool trayJustReachedTunnel = tunnelSeesTrayNow && !tunnelSawTrayLastTime;
+        tunnelSawTrayLastTime = tunnelSeesTrayNow;
+
+        if (trayJustReachedTunnel && !tunnelIsToasting) {
+            tunnelIsToasting = true;
+            stopToastingAtMs = clockMs + HOW_LONG_TO_TOAST_MS;
+        }
+
+        if (tunnelIsToasting) {
+            commandsToTheMachine.tunnel_gate_open = false;   // keep the tray inside
+            commandsToTheMachine.heater = true;
+
+            if (clockMs >= stopToastingAtMs) {
+                tunnelIsToasting = false;
+                host_log("evt", "finished toasting");
+            }
+        }
+    }
+}
+
+} // extern "C"
+</script>
+
+  <script type="text/plain" id="starter-cpp-3">// LEVEL 3 — the same controller written with objects.
+//
+// If you have written Java, this will feel familiar: a Tray knows how to move itself,
+// a Dispenser knows how to hold a tray, and a TrayTracker looks after the collection.
+//
+// TWO RULES that are different from Java, and they matter:
+//
+//  1. No `new`. A controller runs forever on a small chip, so we lay out every object
+//     up front in a fixed-size array instead of creating them as we go.
+//
+//  2. No `virtual` methods on tray data. The app can show you every field of a Tray
+//     because it is told exactly how a Tray is arranged in memory. A virtual method
+//     adds a hidden pointer to that arrangement, and hidden pointers are not
+//     something you can read in the Watch panel. Plain fields plus ordinary methods
+//     cost nothing and stay readable.
+
+#include "Contract.h"
+#include "State.h"
+#include "Watch.h"
+using namespace smores;
+
+extern "C" __attribute__((import_module("env"), import_name("host_log")))
+void host_log(const char* kind, const char* message);
+
+static Inputs  sensorReadings;
+static Outputs commandsToTheMachine;
+
+static const unsigned HOW_LONG_TO_POUR_MS       = 650;
+static const unsigned HOW_LONG_TO_TOAST_MS      = 3800;
+static const float    HOW_CLOSE_COUNTS_AS_HERE_MM = 120.0f;
+
+// ---------------------------------------------------------------------------
+// A Tray is the generated Track (plain fields the app can read) plus methods.
+//
+// The generated field names are short — est_pos_mm, stage, hold. One good reason to
+// write methods is to put a readable name on each thing you actually do with them:
+// isWaitingFor(...) says far more than `stage == DISP[i].stage` does.
+// Adding methods does not change how it is arranged in memory; the check below
+// proves it, and will fail the build if that ever stops being true.
+struct Tray : Track {
+    bool isFinishedWith(int dispenserIndex) const {
+        return stage > layout::DISP[dispenserIndex].stage;
+    }
+    bool isWaitingFor(int dispenserIndex) const {
+        return stage == layout::DISP[dispenserIndex].stage;
+    }
+    float howFarFrom(float positionMm) const {
+        float gap = est_pos_mm - positionMm;
+        return gap < 0 ? -gap : gap;
+    }
+    void moveGuessForward(float beltSpeed, float seconds) {
+        if (status == Moving) est_pos_mm += beltSpeed * seconds;
+    }
+    void correctGuessTo(float truePositionMm) {
+        WATCH("drift_mm", truePositionMm - est_pos_mm);
+        est_pos_mm = truePositionMm;
+    }
+    void waitHereUntil(unsigned clockMs, int dispenserIndex) {
+        status = Held;
+        hold = dispenserIndex;
+        phase_until = clockMs + HOW_LONG_TO_POUR_MS;
+    }
+    void recordIngredientAndMoveOn(int dispenserIndex) {
+        placed[dispenserIndex] = 1;
+        stage = layout::DISP[dispenserIndex].stage + 1;
+        status = Moving;
+        hold = -1;
+    }
+};
+static_assert(sizeof(Tray) == sizeof(Track), "adding methods must not change the memory arrangement");
+
+// ---------------------------------------------------------------------------
+// A Dispenser is a small, cheap object: it remembers which dispenser it is and does
+// the talking to the machine for you.
+class Dispenser {
+public:
+    void useDispenser(int index) { index_ = index; }
+    int  index() const           { return index_; }
+
+    bool seesTray() const        { return sensorReadings.sense[index_]; }
+    float positionMm() const     { return layout::DISP[index_].pos_mm; }
+
+    void holdTrayAndPour() {
+        commandsToTheMachine.gate_open[index_] = false;
+        commandsToTheMachine.dispense[index_] = true;
+    }
+    void letTrayGo() {
+        commandsToTheMachine.gate_open[index_] = true;
+        commandsToTheMachine.dispense[index_] = false;
+    }
+private:
+    int index_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// The TrayTracker owns the trays. Note the fixed-size array: this is where a Java
+// program would use an ArrayList.
+class TrayTracker {
+public:
+    static const int MOST_TRAYS_WE_CAN_FOLLOW = 8;
+
+    int   count() const        { return howMany_; }
+    Tray& get(int i)           { return trays_[i]; }
+    const Tray* asPlainData() const { return trays_; }
+
+    Tray* startFollowingTrayAt(float positionMm) {
+        if (howMany_ >= MOST_TRAYS_WE_CAN_FOLLOW) return nullptr;
+        Tray& tray = trays_[howMany_];
+        tray = Tray();
+        tray.id = howMany_ + 1;
+        tray.est_pos_mm = positionMm;
+        howMany_ = howMany_ + 1;
+        host_log("evt", "now following a new tray");
+        return &tray;
+    }
+
+    Tray* findTrayNear(float positionMm) {
+        Tray* closest = nullptr;
+        float closestGapMm = HOW_CLOSE_COUNTS_AS_HERE_MM;
+        for (int i = 0; i < howMany_; i++) {
+            if (trays_[i].status == Done) continue;
+            float gapMm = trays_[i].howFarFrom(positionMm);
+            if (gapMm < closestGapMm) { closestGapMm = gapMm; closest = &trays_[i]; }
+        }
+        return closest;
+    }
+private:
+    Tray trays_[MOST_TRAYS_WE_CAN_FOLLOW];
+    int  howMany_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// The Controller ties it together. Everything is created once, here, and lives for
+// as long as the machine runs.
+class Controller {
+public:
+    void begin() {
+        for (int i = 0; i < layout::N_DISP; i++) dispensers_[i].useDispenser(i);
+    }
+
+    void runOneCycle(unsigned clockMs) {
+        float seconds = secondsSinceLastCycle(clockMs);
+        startFromAMachineAtRest();
+
+        for (int i = 0; i < trays_.count(); i++) {
+            trays_.get(i).moveGuessForward(commandsToTheMachine.belt_speed, seconds);
+        }
+
+        watchForArrivals(clockMs);
+        finishPouring(clockMs);
+        toastInTheTunnel(clockMs);
+        markFinishedTrays();
+    }
+
+    const Tray* traysAsPlainData() const { return trays_.asPlainData(); }
+    int         trayCount() const        { return trays_.count(); }
+
+private:
+    float secondsSinceLastCycle(unsigned clockMs) {
+        float seconds = haveSeenTheClock_ ? (clockMs - previousClockMs_) / 1000.0f : 0.0f;
+        if (seconds < 0.0f || seconds > 0.5f) seconds = 0.0f;
+        previousClockMs_ = clockMs;
+        haveSeenTheClock_ = true;
+        return seconds;
+    }
+
+    void startFromAMachineAtRest() {
+        commandsToTheMachine.belt_speed = sensorReadings.run ? layout::NOMINAL_SPEED : 0.0f;
+        for (int i = 0; i < layout::N_DISP; i++) dispensers_[i].letTrayGo();
+        commandsToTheMachine.tunnel_gate_open = true;
+        commandsToTheMachine.heater = false;
+    }
+
+    void watchForArrivals(unsigned clockMs) {
+        for (int i = 0; i < layout::N_DISP; i++) {
+            Dispenser& dispenser = dispensers_[i];
+            bool seesTrayNow = dispenser.seesTray();
+            bool justArrived = seesTrayNow && !sawTrayLastCycle_[i];
+
+            if (justArrived) {
+                Tray* tray = trays_.findTrayNear(dispenser.positionMm());
+                if (tray == nullptr && dispenser.index() == 0) {
+                    tray = trays_.startFollowingTrayAt(dispenser.positionMm());
+                }
+                if (tray != nullptr) {
+                    tray->correctGuessTo(dispenser.positionMm());
+                    if (tray->isWaitingFor(dispenser.index())) {
+                        tray->waitHereUntil(clockMs, dispenser.index());
+                    }
+                }
+            }
+            sawTrayLastCycle_[i] = seesTrayNow;
+        }
+    }
+
+    void finishPouring(unsigned clockMs) {
+        for (int i = 0; i < trays_.count(); i++) {
+            Tray& tray = trays_.get(i);
+            if (tray.status != Held) continue;
+
+            Dispenser& dispenser = dispensers_[tray.hold];
+            dispenser.holdTrayAndPour();
+
+            if (clockMs >= tray.phase_until) {
+                BREAKPOINT();   // a good place to stop and look at this tray
+                // This controller believes the pour worked without checking. Try the
+                // "Fail g1" fault button to see what that costs.
+                tray.recordIngredientAndMoveOn(dispenser.index());
+            }
+        }
+    }
+
+    void toastInTheTunnel(unsigned clockMs) {
+        if (!layout::HAS_TUNNEL) return;
+
+        if (sensorReadings.tunnel_entry) {
+            Tray* tray = trays_.findTrayNear(layout::TUNNEL_ENTRY_MM);
+            bool readyToToast = tray != nullptr && tray->status == Moving
+                             && tray->stage == layout::TUNNEL_STAGE;
+            if (readyToToast) {
+                tray->status = Toasting;
+                tray->phase_until = clockMs + HOW_LONG_TO_TOAST_MS;
+            }
+        }
+
+        bool anyTrayToasting = false;
+        for (int i = 0; i < trays_.count(); i++) {
+            Tray& tray = trays_.get(i);
+            if (tray.status != Toasting) continue;
+            if (clockMs >= tray.phase_until) {
+                tray.stage = layout::TUNNEL_STAGE + 1;
+                tray.status = Moving;
+            } else {
+                anyTrayToasting = true;
+            }
+        }
+
+        commandsToTheMachine.heater = anyTrayToasting;
+        commandsToTheMachine.tunnel_gate_open = !anyTrayToasting;
+    }
+
+    void markFinishedTrays() {
+        for (int i = 0; i < trays_.count(); i++) {
+            Tray& tray = trays_.get(i);
+            if (tray.status == Moving && tray.stage >= layout::N_STAGES) {
+                tray.status = Done;
+                host_log("evt", "a s'more is finished");
+            }
+        }
+    }
+
+    Dispenser   dispensers_[layout::N_DISP];
+    TrayTracker trays_;
+    bool        sawTrayLastCycle_[layout::N_DISP] = {};
+    unsigned    previousClockMs_ = 0;
+    bool        haveSeenTheClock_ = false;
+};
+
+// Created once, never with `new`.
+static Controller controller;
+static bool controllerHasBegun = false;
+
+extern "C" {
+
+Inputs*      inputs_ptr()   { return &sensorReadings; }
+Outputs*     outputs_ptr()  { return &commandsToTheMachine; }
+int          track_count()  { return controller.trayCount(); }
+const Track* tracks_ptr()   { return controller.traysAsPlainData(); }
+int          track_stride() { return (int)sizeof(Tray); }
+
+void runOneControlCycle() {
+    if (!controllerHasBegun) { controller.begin(); controllerHasBegun = true; }
+    controller.runOneCycle(sensorReadings.now_ms);
+}
+
+} // extern "C"
+</script>
+
+  <script type="text/plain" id="starter-python-1"># LEVEL 1 - the simplest controller that makes s'mores.
+#
+# It only REACTS. When a sensor says "a tray is here", it holds the tray, runs that
+# dispenser for a moment, then lets the tray go. It keeps no memory of where trays
+# are, so it never has to guess.
+#
+# Because it remembers nothing, the Tray tracking table stays empty while this runs.
+# That is not a bug - it is the whole reason Level 2 exists. A real line cannot see a
+# tray between its sensors, so if you ever need to know where a tray IS, you have to
+# remember it yourself.
+
+this_controller_needs = {"dispensers": ["g1", "c1", "m1"], "tunnel": True}
+
+HOW_LONG_TO_POUR_MS = 650
+HOW_LONG_TO_TOAST_MS = 3800
+
+
+def run_one_control_cycle(machine, memory):
+    if "dispenser_is_pouring" not in memory:
+        how_many_dispensers = len(machine.dispensers)
+        memory["dispenser_is_pouring"] = [False] * how_many_dispensers
+        memory["stop_pouring_at_ms"] = [0] * how_many_dispensers
+        memory["sensor_saw_tray_last_time"] = [False] * how_many_dispensers
+        memory["tunnel_is_toasting"] = False
+        memory["stop_toasting_at_ms"] = 0
+        memory["tunnel_saw_tray_last_time"] = False
+
+    machine.setBeltSpeed(machine.normalBeltSpeedMmPerSecond)
+
+    # This is the only loop: it repeats the same simple check for each dispenser.
+    for dispenser in machine.dispensers:
+        here = dispenser.index
+        sensor_sees_tray_now = machine.isTrayAtDispenser(here)
+        tray_just_arrived = sensor_sees_tray_now and not memory["sensor_saw_tray_last_time"][here]
+
+        if tray_just_arrived and not memory["dispenser_is_pouring"][here]:
+            memory["dispenser_is_pouring"][here] = True
+            memory["stop_pouring_at_ms"][here] = machine.clockMs + HOW_LONG_TO_POUR_MS
+            machine.log("a tray arrived, starting to pour")
+
+        if memory["dispenser_is_pouring"][here]:
+            machine.closeGate(here)          # hold the tray still
+            machine.startDispensing(here)    # run the chute
+
+            if machine.clockMs >= memory["stop_pouring_at_ms"][here]:
+                memory["dispenser_is_pouring"][here] = False
+                machine.openGate(here)
+                machine.stopDispensing(here)
+
+        memory["sensor_saw_tray_last_time"][here] = sensor_sees_tray_now
+
+    if machine.tunnel:
+        # Only START when the beam FIRST sees the tray. Without this the tray is still
+        # sitting on the beam when toasting ends, so it would start toasting again
+        # immediately and never leave the tunnel.
+        tunnel_sees_tray_now = machine.isTrayAtTunnelEntrance()
+        tray_just_reached_tunnel = tunnel_sees_tray_now and not memory["tunnel_saw_tray_last_time"]
+        memory["tunnel_saw_tray_last_time"] = tunnel_sees_tray_now
+
+        if tray_just_reached_tunnel and not memory["tunnel_is_toasting"]:
+            memory["tunnel_is_toasting"] = True
+            memory["stop_toasting_at_ms"] = machine.clockMs + HOW_LONG_TO_TOAST_MS
+
+        if memory["tunnel_is_toasting"]:
+            machine.closeTunnelGate()        # keep the tray inside
+            machine.turnHeaterOn()
+
+            if machine.clockMs >= memory["stop_toasting_at_ms"]:
+                memory["tunnel_is_toasting"] = False
+                machine.log("finished toasting")
+
+    return []   # nothing remembered, so nothing to draw
+</script>
+
+  <script type="text/plain" id="starter-python-3"># LEVEL 3 - the same controller written with classes.
+#
+# If you have written Java, this will feel familiar: a Tray knows how to move itself,
+# a Dispenser knows how to hold a tray, and a TrayTracker looks after the collection.
+#
+# One thing to notice: at the end we hand the app plain dictionaries of each tray's
+# fields (tray.__dict__). The app draws what it is given, and plain data is the one
+# shape every language agrees on.
+
+this_controller_needs = {"dispensers": ["g1", "c1", "m1"], "tunnel": True}
+
+HOW_LONG_TO_POUR_MS = 650
+HOW_LONG_TO_TOAST_MS = 3800
+HOW_CLOSE_COUNTS_AS_HERE_MM = 120
+
+
+class Tray:
+    def __init__(self, tray_id, position_mm, how_many_dispensers):
+        self.id = tray_id
+        self.guessed_position_mm = position_mm
+        self.steps_finished = 0
+        self.status = "moving"
+        self.waiting_at_dispenser = -1
+        self.wait_until_ms = 0
+        self.ingredients_placed = [0] * how_many_dispensers
+
+    def is_waiting_for(self, dispenser):
+        return self.steps_finished == dispenser.step_number
+
+    def how_far_from(self, position_mm):
+        return abs(self.guessed_position_mm - position_mm)
+
+    def move_guess_forward(self, belt_speed, seconds):
+        if self.status == "moving":
+            self.guessed_position_mm += belt_speed * seconds
+
+    def correct_guess_to(self, true_position_mm, machine):
+        machine.watch("drift_mm", true_position_mm - self.guessed_position_mm)
+        self.guessed_position_mm = true_position_mm
+
+    def wait_here_until(self, clock_ms, dispenser):
+        self.status = "held"
+        self.waiting_at_dispenser = dispenser.index
+        self.wait_until_ms = clock_ms + HOW_LONG_TO_POUR_MS
+
+    def record_ingredient_and_move_on(self, dispenser):
+        self.ingredients_placed[dispenser.index] = 1
+        self.steps_finished = dispenser.step_number + 1
+        self.status = "moving"
+        self.waiting_at_dispenser = -1
+
+
+class Dispenser:
+    """Remembers which dispenser it is, and does the talking to the machine."""
+
+    def __init__(self, machine, index, position_mm, step_number):
+        self.machine = machine
+        self.index = index
+        self.position_mm = position_mm
+        self.step_number = step_number
+
+    def sees_tray(self):
+        return self.machine.isTrayAtDispenser(self.index)
+
+    def hold_tray_and_pour(self):
+        self.machine.closeGate(self.index)
+        self.machine.startDispensing(self.index)
+
+
+class TrayTracker:
+    """Looks after the trays we are following."""
+
+    def __init__(self):
+        self.trays = []
+
+    def start_following_tray_at(self, position_mm, how_many_dispensers, machine):
+        tray = Tray(len(self.trays) + 1, position_mm, how_many_dispensers)
+        self.trays.append(tray)
+        machine.log("now following tray #%d" % tray.id)
+        return tray
+
+    def find_tray_near(self, position_mm):
+        closest = None
+        closest_gap_mm = HOW_CLOSE_COUNTS_AS_HERE_MM
+        for tray in self.trays:
+            if tray.status == "done":
+                continue
+            gap_mm = tray.how_far_from(position_mm)
+            if gap_mm < closest_gap_mm:
+                closest_gap_mm = gap_mm
+                closest = tray
+        return closest
+
+
+class Controller:
+    def __init__(self, machine):
+        self.machine = machine
+        self.dispensers = [Dispenser(machine, d.index, d.positionMm, d.stepNumber)
+                           for d in machine.dispensers]
+        self.trays = TrayTracker()
+        self.saw_tray_last_cycle = [False] * len(self.dispensers)
+
+    def run_one_cycle(self):
+        machine = self.machine
+        if machine.isRunning:
+            machine.setBeltSpeed(machine.normalBeltSpeedMmPerSecond)
+        else:
+            machine.setBeltSpeed(0)
+
+        for tray in self.trays.trays:
+            tray.move_guess_forward(machine.beltSpeedCommandedLastUpdate,
+                                    machine.secondsSinceLastUpdate)
+
+        self.watch_for_arrivals()
+        self.finish_pouring()
+        self.toast_in_the_tunnel()
+        self.mark_finished_trays()
+
+    def watch_for_arrivals(self):
+        for dispenser in self.dispensers:
+            sees_tray_now = dispenser.sees_tray()
+            just_arrived = sees_tray_now and not self.saw_tray_last_cycle[dispenser.index]
+
+            if just_arrived:
+                tray = self.trays.find_tray_near(dispenser.position_mm)
+                if tray is None and dispenser.index == 0:
+                    tray = self.trays.start_following_tray_at(
+                        dispenser.position_mm, len(self.dispensers), self.machine)
+                if tray is not None:
+                    tray.correct_guess_to(dispenser.position_mm, self.machine)
+                    if tray.is_waiting_for(dispenser):
+                        tray.wait_here_until(self.machine.clockMs, dispenser)
+
+            self.saw_tray_last_cycle[dispenser.index] = sees_tray_now
+
+    def finish_pouring(self):
+        for tray in self.trays.trays:
+            if tray.status != "held":
+                continue
+            dispenser = self.dispensers[tray.waiting_at_dispenser]
+            dispenser.hold_tray_and_pour()
+
+            if self.machine.clockMs >= tray.wait_until_ms:
+                # This controller believes the pour worked without checking. Try the
+                # "Fail g1" fault button to see what that costs.
+                tray.record_ingredient_and_move_on(dispenser)
+
+    def toast_in_the_tunnel(self):
+        machine = self.machine
+        if not machine.tunnel:
+            return
+
+        if machine.isTrayAtTunnelEntrance():
+            tray = self.trays.find_tray_near(machine.tunnel.entrancePositionMm)
+            ready_to_toast = (tray is not None
+                              and tray.status == "moving"
+                              and tray.steps_finished == machine.stepNumberForToasting)
+            if ready_to_toast:
+                tray.status = "toasting"
+                tray.wait_until_ms = machine.clockMs + HOW_LONG_TO_TOAST_MS
+
+        any_tray_toasting = False
+        for tray in self.trays.trays:
+            if tray.status != "toasting":
+                continue
+            if machine.clockMs >= tray.wait_until_ms:
+                tray.steps_finished = machine.stepNumberForToasting + 1
+                tray.status = "moving"
+            else:
+                any_tray_toasting = True
+
+        if any_tray_toasting:
+            machine.turnHeaterOn()
+            machine.closeTunnelGate()
+        else:
+            machine.turnHeaterOff()
+            machine.openTunnelGate()
+
+    def mark_finished_trays(self):
+        for tray in self.trays.trays:
+            if tray.status == "moving" and tray.steps_finished >= self.machine.stepsNeededToFinishASmore:
+                tray.status = "done"
+                self.machine.log("s'more #%d is finished" % tray.id)
+
+
+def run_one_control_cycle(machine, memory):
+    # Build the controller once, then keep it in memory for every later cycle.
+    if "controller" not in memory:
+        memory["controller"] = Controller(machine)
+
+    controller = memory["controller"]
+    controller.run_one_cycle()
+
+    # Hand the app plain data for each tray so it can draw them.
+    return [tray.__dict__ for tray in controller.trays.trays]
 </script>
 
   <main class="stage single-only">
@@ -1185,7 +1850,7 @@ void runOneControlCycle() {
 
   function reset(){
     clearWatches();                 // watches are sticky within a run
-    engines = viewMode==="studio"  ? [ STUDIO.lang==="cpp" ? makeCppEngine(STUDIO.cppModule) : makeJsEngine() ]
+    engines = viewMode==="studio"  ? [ activeLang()==="cpp" ? makeCppEngine(STUDIO.cppModule) : makeJsEngine() ]
             : viewMode==="compare" ? [makeEngine(modeA), makeEngine(modeB)]
             :                        [makeEngine(modeA)];
     sim = { t:0, tick:0, playing:false, speed:1, acc:0 };
@@ -1664,28 +2329,107 @@ void runOneControlCycle() {
   }
 
   // =================== STUDIO (write your own controller) ===================
-  const STUDIO = { lang:"js", editor:null, ready:false, models:{} };
-  const STARTER = lang => (document.getElementById("starter-"+lang).textContent||"").replace(/^\n/,"");
-  const MONACO_LANG = { js:"javascript", python:"python", cpp:"cpp" };
+  const STUDIO = { openKey:"cpp-2", controllerKey:"cpp-2", editor:null, ready:false, models:{}, genHeaders:null };
   const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min";
   function studioStatus(msg, cls){ const el=$("studioStatus"); if(!el)return; el.textContent=msg; el.className="studio-status"+(cls?" "+cls:""); }
 
-  // ---- P4: the project tree (HAL.md §H-9) --------------------------------------
-  // The Studio is a small project, not one buffer: the machine (layout.json), the
-  // controller you write, and the HAL layer where slots/channels live. HAL files
-  // are editable on purpose — a mismatch between the sim wiring and the real wiring
-  // should be visible in the same place (UI-5).
-  const HAL_FILES = [
-    { key:"Hal.h",         path:"./src/smores/Hal.h",         lang:"cpp", ro:false, note:"THE HAL — the subsystem interfaces the controller talks to" },
-    { key:"Machine.h",     path:"./src/smores/Machine.h",     lang:"cpp", ro:false, note:"the composition root handed to the controller" },
-    { key:"SimMachine.h",  path:"./src/smores/SimMachine.h",  lang:"cpp", ro:false, note:"HAL impl for the browser — backed by the contract structs" },
-    { key:"P1amMachine.h", path:"./src/smores/P1amMachine.h", lang:"cpp", ro:false, note:"HAL impl for REAL hardware — this is where P1.writeDiscrete lives" },
-    { key:"Watch.h",       path:"./src/smores/Watch.h",        lang:"cpp", ro:false, note:"WATCH(name,value) telemetry" },
-    { key:"Controller.cpp",path:"./src/Controller.cpp",        lang:"cpp", ro:false, note:"the shipped reference controller (portable: sim + hardware)" },
-    { key:"Layout.h",      path:"GEN:Layout.h",                lang:"cpp", ro:true,  note:"GENERATED from layout.json — edit the layout instead" },
-    { key:"Contract.h",    path:"GEN:Contract.h",              lang:"cpp", ro:true,  note:"GENERATED from layout.json" },
-    { key:"State.h",       path:"GEN:State.h",                 lang:"cpp", ro:true,  note:"GENERATED from layout.json" },
+  // ---- the project tree (HAL.md §H-9) ------------------------------------------
+  // The Studio is a small project, not one buffer. The grouping is the lesson: what
+  // YOU write, the machine it runs on, the layer that reaches hardware, and the files
+  // the layout generates for you.
+  //
+  // Controllers come in three levels of the same job, so a student can start wherever
+  // they are comfortable and read the next level as a diff:
+  //   Level 1  react to sensors only, remember nothing
+  //   Level 2  remember where you believe each tray is, in named steps
+  //   Level 3  the same thing written with objects
+  const FILES = [
+    { key:"cpp-1", group:"Your controller", label:"C++ · Level 1", kind:"controller", lang:"cpp", starter:"starter-cpp-1",
+      note:"Reacts to sensors only and remembers nothing. The tray still gets built — watch the Line view and the Decision log — but the Tray tracking table and the Done count stay empty, because the controller has nothing to report. That is why Level 2 exists." },
+    { key:"cpp-2", group:"Your controller", label:"C++ · Level 2", kind:"controller", lang:"cpp", starter:"starter-cpp-2",
+      note:"Remembers where it believes each tray is, and corrects that belief at every sensor. Written as a list of named steps." },
+    { key:"cpp-3", group:"Your controller", label:"C++ · Level 3", kind:"controller", lang:"cpp", starter:"starter-cpp-3",
+      note:"The same job with objects — a Tray that moves itself, a Dispenser, a TrayTracker. Familiar from Java, with two rules: no `new`, no `virtual`." },
+    { key:"py-1",  group:"Your controller", label:"Python · Level 1", kind:"controller", lang:"python", starter:"starter-python-1",
+      note:"Reacts to sensors only and remembers nothing. The tray still gets built — watch the Line view and the Decision log — but the Tray tracking table and the Done count stay empty, because the controller has nothing to report." },
+    { key:"py-2",  group:"Your controller", label:"Python · Level 2", kind:"controller", lang:"python", starter:"starter-python-2",
+      note:"Remembers where it believes each tray is, written as a list of named steps." },
+    { key:"py-3",  group:"Your controller", label:"Python · Level 3", kind:"controller", lang:"python", starter:"starter-python-3",
+      note:"The same job with classes — Tray, Dispenser, TrayTracker — handing the app plain data at the end." },
+    { key:"js",    group:"Your controller", label:"JavaScript", kind:"controller", lang:"js", starter:"starter-js",
+      note:"A single JavaScript example. The three levels are C++ and Python for now." },
+
+    { key:"layout", group:"The machine", label:"layout.json", kind:"layout", lang:"json",
+      note:"The machine itself: where each dispenser sits, and which module/slot/channel every signal is wired to. Checked as you type; Apply regenerates the contract." },
+
+    { key:"Hal.h",          group:"How code reaches hardware", label:"Hal.h",          kind:"source", lang:"cpp", path:"./src/smores/Hal.h",
+      note:"The list of things a controller is allowed to ask the machine to do." },
+    { key:"SimMachine.h",   group:"How code reaches hardware", label:"SimMachine.h",   kind:"source", lang:"cpp", path:"./src/smores/SimMachine.h",
+      note:"How those requests work in the browser." },
+    { key:"P1amMachine.h",  group:"How code reaches hardware", label:"P1amMachine.h",  kind:"source", lang:"cpp", path:"./src/smores/P1amMachine.h",
+      note:"How those same requests work on a real P1AM — this is the only file that mentions slots and channels." },
+    { key:"Machine.h",      group:"How code reaches hardware", label:"Machine.h",      kind:"source", lang:"cpp", path:"./src/smores/Machine.h",
+      note:"The bundle of subsystems your controller is handed." },
+    { key:"Watch.h",        group:"How code reaches hardware", label:"Watch.h",        kind:"source", lang:"cpp", path:"./src/smores/Watch.h",
+      note:"WATCH(name, value) and BREAKPOINT() — how you look inside a running controller." },
+    { key:"Controller.cpp", group:"How code reaches hardware", label:"Controller.cpp", kind:"source", lang:"cpp", path:"./src/Controller.cpp",
+      note:"The reference controller that ships with the app. The same file runs in the browser and on a real board." },
+
+    { key:"Layout.h",   group:"Generated from layout.json", label:"Layout.h",   kind:"generated", lang:"cpp", path:"GEN:Layout.h",
+      note:"Written for you from layout.json. Change the layout, not this." },
+    { key:"Contract.h", group:"Generated from layout.json", label:"Contract.h", kind:"generated", lang:"cpp", path:"GEN:Contract.h",
+      note:"Written for you from layout.json: the exact inputs and outputs of this machine." },
+    { key:"State.h",    group:"Generated from layout.json", label:"State.h",    kind:"generated", lang:"cpp", path:"GEN:State.h",
+      note:"Written for you from layout.json: what one tray's record looks like, which is how the app can show you every field." },
   ];
+  const MONACO_LANG = { js:"javascript", python:"python", cpp:"cpp", json:"json" };
+  const fileByKey = key => FILES.find(f => f.key === key);
+  const openFileSpec       = () => fileByKey(STUDIO.openKey);
+  const controllerFile     = () => fileByKey(STUDIO.controllerKey);
+  const activeLang         = () => controllerFile().lang;
+  const activeControllerSource = () => STUDIO.models[STUDIO.controllerKey].getValue();
+  const starterTextFor = spec => spec.starter ? (document.getElementById(spec.starter).textContent||"").replace(/^\n/,"") : "";
+
+  function renderFileTree(){
+    const host = $("fileTree"); if (!host) return;
+    let html = "", lastGroup = null;
+    for (const f of FILES) {
+      if (f.group !== lastGroup) { html += `<div class="file-group">${f.group}</div>`; lastGroup = f.group; }
+      const isOpen = f.key === STUDIO.openKey;
+      const runsHere = f.kind === "controller" && f.key === STUDIO.controllerKey;
+      const badge = runsHere ? `<span class="runs">RUNS</span>`
+                  : f.kind === "generated" ? `<span class="ro">read-only</span>` : "";
+      html += `<button class="file-item${isOpen?" open":""}${f.kind==="generated"?" generated":""}" data-key="${f.key}" title="${f.note.replace(/"/g,"&quot;")}">`
+            + `<span>${f.label}</span>${badge}</button>`;
+    }
+    host.innerHTML = html;
+    host.querySelectorAll(".file-item").forEach(b => b.addEventListener("click", ()=>{ if(DBG.on) dbgStop(); openFile(b.dataset.key); }));
+  }
+
+  // Show a file. Opening a controller also makes it the one that Run/Debug uses.
+  function openFile(key){
+    const spec = fileByKey(key); if (!spec || !STUDIO.editor) return;
+    STUDIO.openKey = key;
+    if (spec.kind === "controller") STUDIO.controllerKey = key;
+
+    STUDIO.editor.setModel(STUDIO.models[key]);
+    STUDIO.editor.updateOptions({ readOnly: spec.kind === "generated" });
+    $("fileOpenName").textContent = spec.label;
+    $("fileNote").textContent = spec.note;
+    const isLayout = spec.kind === "layout";
+    $("applyBtn").style.display  = isLayout ? "" : "none";
+    $("exportBtn").style.display = isLayout ? "" : "none";
+    $("checkBtn").style.display  = spec.kind === "controller" ? "" : "none";
+    renderFileTree();
+
+    if (isLayout) { scheduleLayoutValidate(); return; }
+    if (spec.kind === "controller") {
+      studioStatus(`${spec.label} is now the controller that runs. Press ▶ Run below.`);
+    } else {
+      studioStatus(spec.kind === "generated" ? "Read-only — this file is written from layout.json." : "You can edit this file.");
+    }
+  }
+
   let CODEGEN = null, MODULE_CATALOG = null;
   // One validator for the build and the browser (UI-3): this is literally the
   // module codegen runs, so an error here is an error there.
@@ -1712,7 +2456,7 @@ void runOneControlCycle() {
   function scheduleLayoutValidate(){
     clearTimeout(_valTimer);
     _valTimer = setTimeout(async()=>{
-      if (STUDIO.file !== "layout" || !STUDIO.editor) return;
+      if (STUDIO.openKey !== "layout" || !STUDIO.editor) return;
       const model = STUDIO.models.layout;
       const r = await validateLayoutText(model.getValue());
       // inline markers, so the error is on the line it belongs to where we can tell
@@ -1745,7 +2489,7 @@ void runOneControlCycle() {
     applyMeta(meta, LAYOUT.module, r.L.name);   // keeps the current wasm for now
     for (const k of ["Layout.h","Contract.h","State.h"])
       if (STUDIO.models[k]) STUDIO.models[k].setValue(STUDIO.genHeaders[k]);
-    studioStatus(`✓ applied “${r.L.name}” — contract regenerated in-browser. ${STUDIO.lang==="cpp" ? "Press ▶ Run to recompile your C++ against it." : "Press ▶ Run."}`, "ok");
+    studioStatus(`✓ applied “${r.L.name}” — contract regenerated in-browser. ${activeLang()==="cpp" ? "Press ▶ Run to recompile your C++ against it." : "Press ▶ Run."}`, "ok");
     fitAll();
     return true;
   }
@@ -1759,23 +2503,22 @@ void runOneControlCycle() {
         "self.MonacoEnvironment={baseUrl:'"+MONACO_BASE+"/'};importScripts('"+MONACO_BASE+"/vs/base/worker/workerMain.js');") };
     await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=MONACO_BASE+"/vs/loader.js"; s.onload=res; s.onerror=()=>rej(new Error("Monaco loader.js")); document.head.appendChild(s); });
     await new Promise(res=>{ require.config({ paths:{ vs: MONACO_BASE+"/vs" }}); require(["vs/editor/editor.main"], res); });
-    for (const lang of ["js","python","cpp"]) STUDIO.models[lang] = monaco.editor.createModel(STARTER(lang), MONACO_LANG[lang]);
-    // the machine itself, as editable source
-    STUDIO.models.layout = monaco.editor.createModel(LAYOUT_JSON_TEXT, "json");
+    for (const f of FILES) {
+      const initial = f.kind === "controller" ? starterTextFor(f)
+                    : f.kind === "layout"     ? LAYOUT_JSON_TEXT
+                    : "// loading " + f.label + " …";
+      STUDIO.models[f.key] = monaco.editor.createModel(initial, MONACO_LANG[f.lang] || "plaintext");
+    }
     STUDIO.models.layout.onDidChangeContent(()=>scheduleLayoutValidate());
-    // the project tree: HAL + generated files, fetched lazily on first view
-    for (const f of HAL_FILES) STUDIO.models[f.key] = monaco.editor.createModel("// loading " + f.key + " …", f.lang);
-    STUDIO.editor = monaco.editor.create($("editor"), { model:STUDIO.models[STUDIO.lang], theme:"vs-dark", fontSize:12.5, minimap:{enabled:false}, automaticLayout:true, scrollBeyondLastLine:false, padding:{top:10}, glyphMargin:true });
+    STUDIO.editor = monaco.editor.create($("editor"), { model:STUDIO.models[STUDIO.openKey], theme:"vs-dark", fontSize:12.5, minimap:{enabled:false}, automaticLayout:true, scrollBeyondLastLine:false, padding:{top:10}, glyphMargin:true });
     STUDIO.ready = true;
-    // populate the HAL picker
-    const pick = $("halPick");
-    pick.innerHTML = HAL_FILES.map(f=>`<option value="${f.key}">${f.key}${f.ro?" (generated)":""}</option>`).join("");
-    pick.addEventListener("change", ()=>openHalFile(pick.value));
-    loadHalSources();
+    renderFileTree();
+    openFile(STUDIO.openKey);
+    loadProjectSources();
     studioStatus("editor ready — write a controller, then “Check vs layout”. (Running & step-debugging: coming next.)");
   }
-  async function loadHalSources(){
-    for (const f of HAL_FILES) {
+  async function loadProjectSources(){
+    for (const f of FILES.filter(x => x.path)) {
       try {
         let text;
         if (f.path.startsWith("GEN:")) {
@@ -1786,40 +2529,14 @@ void runOneControlCycle() {
           text = await (await fetch(f.path, {cache:"no-cache"})).text();
         }
         STUDIO.models[f.key].setValue(text);
-      } catch(e){ STUDIO.models[f.key].setValue("// could not load " + f.key + ": " + e.message); }
+      } catch(e){ STUDIO.models[f.key].setValue("// could not load " + f.label + ": " + e.message); }
     }
-  }
-  function openHalFile(key){
-    const f = HAL_FILES.find(x=>x.key===key); if(!f) return;
-    STUDIO.file = "hal"; STUDIO.halKey = key;
-    document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.file==="hal"));
-    $("halPick").style.display=""; $("applyBtn").style.display="none"; $("exportBtn").style.display="none";
-    STUDIO.editor.setModel(STUDIO.models[key]);
-    STUDIO.editor.updateOptions({ readOnly: !!f.ro });
-    studioStatus((f.ro?"read-only · ":"editable · ") + f.note, f.ro?"":"ok");
-  }
-  function openLayoutFile(){
-    STUDIO.file = "layout";
-    document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.file==="layout"));
-    $("halPick").style.display="none"; $("applyBtn").style.display=""; $("exportBtn").style.display="";
-    STUDIO.editor.setModel(STUDIO.models.layout);
-    STUDIO.editor.updateOptions({ readOnly:false });
-    scheduleLayoutValidate();
-  }
-  function setStudioLang(lang){
-    STUDIO.lang = lang; STUDIO.file = "controller";
-    document.querySelectorAll(".lang-tab").forEach(b=>b.classList.toggle("active", b.dataset.lang===lang));
-    const hp=$("halPick"); if(hp) hp.style.display="none";
-    $("applyBtn").style.display="none"; $("exportBtn").style.display="none";
-    if (STUDIO.editor) { STUDIO.editor.setModel(STUDIO.models[lang]); STUDIO.editor.updateOptions({ readOnly:false }); }
-    studioStatus(lang==="cpp" ? "C++ is checked at COMPILE time against the layout-generated contract (strongest bound-pair check)."
-                              : "declare `requires` — it's validated against the active layout before the controller runs.");
   }
   // ER-5: the runtime layout-compatibility check for scripted controllers — the
   // equivalent of the C++ compile-time contract check, via declared requirements.
   function checkVsLayout(){
     if (!STUDIO.editor){ studioStatus("editor not ready yet", "err"); return; }
-    const src = STUDIO.editor.getValue();
+    const src = activeControllerSource();
     const need = { dispensers:[], tunnel:null };
     const mDisp = src.match(/dispensers"?\s*[:=]\s*\[([^\]]*)\]/);
     if (mDisp) need.dispensers = (mDisp[1].match(/["']([^"']+)["']/g)||[]).map(s=>s.replace(/["']/g,""));
@@ -1830,7 +2547,7 @@ void runOneControlCycle() {
     if (missing.length) problems.push("layout '"+LAYOUT.name+"' has no dispenser(s): "+missing.join(", "));
     if (need.tunnel===true && !LAYOUT.tunnel) problems.push("controller needs a tunnel; layout '"+LAYOUT.name+"' has none");
     const extra = LAYOUT.dispensers.map(d=>d.id).filter(id=>need.dispensers.length && !need.dispensers.includes(id));
-    if (STUDIO.lang==="cpp"){
+    if (activeLang()==="cpp"){
       studioStatus(problems.length
         ? "⚠ "+problems.join(" · ")+"  — and C++ would FAIL TO COMPILE against this layout."
         : "✓ needs match '"+LAYOUT.name+"'. C++ additionally won't compile if it names a module the layout lacks.", problems.length?"err":"ok");
@@ -1847,16 +2564,21 @@ void runOneControlCycle() {
   // The `machine` object a student controller receives. Every name here is meant to
   // be readable out loud: questions start with `is`/`count`, commands start with a
   // verb, and measurements say their units.
-  function makeIO(w, o, inp, mem){
-    return {
+  // Build the machine object ONCE per lane and refresh its readings each cycle
+  // (refreshIO below). A controller that stores `machine` in a field — which is the
+  // natural thing to do in an object-oriented design — must keep working, so the
+  // object it stored has to be the same one that gets updated.
+  function makeIO(w, o, mem){
+    const io = {
+      _inp: null,
       // --- what time it is, and whether the operator has the line switched on ---
-      clockMs: inp.t,
+      clockMs: 0,
       secondsSinceLastUpdate: STEP,
-      isRunning: inp.run,
+      isRunning: true,
 
       // --- facts about this particular machine, from its layout ---
       normalBeltSpeedMmPerSecond: NOMINAL_SPEED,
-      beltSpeedCommandedLastUpdate: mem.__beltCmd || 0,
+      beltSpeedCommandedLastUpdate: 0,
       stepsNeededToFinishASmore: LAYOUT.nStages,
       stepNumberForToasting: LAYOUT.tunnelStage,
       dispensers: STATIONS.map((station, index) => ({
@@ -1871,11 +2593,11 @@ void runOneControlCycle() {
       tunnel: TUNNEL ? { entrancePositionMm: TUNNEL.entry, exitPositionMm: TUNNEL.exit } : null,
 
       // --- questions you can ask the sensors ---
-      isTrayAtDispenser: index => !!inp.sense[index],
-      countIngredientsDropped: index => inp.confirm[index] | 0,
-      isTrayAtTunnelEntrance: () => !!inp.tunnel_entry,
-      isTrayAtTunnelExit: () => !!inp.tunnel_exit,
-      tunnelTemperatureCelsius: () => inp.tunnel_temp,
+      isTrayAtDispenser: index => !!io._inp.sense[index],
+      countIngredientsDropped: index => io._inp.confirm[index] | 0,
+      isTrayAtTunnelEntrance: () => !!io._inp.tunnel_entry,
+      isTrayAtTunnelExit: () => !!io._inp.tunnel_exit,
+      tunnelTemperatureCelsius: () => io._inp.tunnel_temp,
 
       // --- commands you can give the machine ---
       setBeltSpeed: mmPerSecond => { o.belt = +mmPerSecond || 0; },
@@ -1889,9 +2611,16 @@ void runOneControlCycle() {
       turnHeaterOff: () => { o.heater = false; },
 
       // --- explain yourself: log writes a sentence, watch shows a live number ---
-      log: (message, kind) => log(inp.t, String(message), kind || "evt"),
+      log: (message, kind) => log(io._inp.t, String(message), kind || "evt"),
       watch: (name, value) => noteWatch(String(name), Number(value)),
     };
+    return io;
+  }
+  function refreshIO(io, inp, mem){
+    io._inp = inp;
+    io.clockMs = inp.t;
+    io.isRunning = inp.run;
+    io.beltSpeedCommandedLastUpdate = mem.__beltCmd || 0;
   }
   const _statusName = s => (["moving","held","toasting","done","lost"].includes(s) ? s : "moving");
   // Student controllers may name their fields readably (guessedPositionMm,
@@ -1913,7 +2642,9 @@ void runOneControlCycle() {
     const o=e.ctrl.out;
     e.mem.__beltCmd = o.belt;                         // last commanded belt (for dead-reckoning)
     o.belt=0; for(let k=0;k<N_DISP;k++){ o.gate[k]=true; o.dispense[k]=false; } o.heater=false; o.tunnelGateOpen=true;
-    const io=makeIO(e.world,o,inp,e.mem);
+    if (!e.io) e.io = makeIO(e.world, o, e.mem);
+    refreshIO(e.io, inp, e.mem);
+    const io = e.io;
     let tracks;
     try { tracks = e.controller(io, e.mem); }
     catch(err){ studioStatus("runtime error at t="+(inp.t/1000).toFixed(2)+"s: "+err.message, "err"); sim.playing=false; throw err; }
@@ -1932,9 +2663,7 @@ void runOneControlCycle() {
   }
   // compile editor source -> a tick(io,mem) function (throws on parse error / bad shape)
   function studioCompile(){
-    const src = STUDIO.editor ? STUDIO.editor.getValue() : STARTER("js");
-    if (STUDIO.lang==="python") throw new Error("the Python runtime is the next step — use the JavaScript tab for now");
-    if (STUDIO.lang==="cpp")    throw new Error("C++ runs via in-browser compile (a later step) — use the JavaScript tab for now");
+    const src = activeControllerSource();
     const factory = new Function(src + "\n;return { entry:(typeof runOneControlCycle!=='undefined')?runOneControlCycle:((typeof tick!=='undefined')?tick:null), requires:(typeof thisControllerNeeds!=='undefined')?thisControllerNeeds:((typeof requires!=='undefined')?requires:null) };");
     const mod = factory();
     if (typeof mod.entry !== "function") throw new Error("this file needs a `function runOneControlCycle(machine, memory)`");
@@ -1943,11 +2672,11 @@ void runOneControlCycle() {
   async function studioLoad(){
     if (DBG.on) dbgStop();
     try {
-      if (STUDIO.lang==="python")   STUDIO.compiled = await studioCompilePython();
-      else if (STUDIO.lang==="cpp") STUDIO.cppModule = await cppCompile();
+      if (activeLang()==="python")   STUDIO.compiled = await studioCompilePython();
+      else if (activeLang()==="cpp") STUDIO.cppModule = await cppCompile();
       else                          STUDIO.compiled = studioCompile().entry;
       reset(); injectTray(); renderAll();          // reset() builds the studio lane
-      const label = {js:"JavaScript", python:"Python", cpp:"C++"}[STUDIO.lang];
+      const label = controllerFile().label;
       studioStatus("running your "+label+" controller on the "+(LAYOUT.title||LAYOUT.name)+" line — Run / Step / Reset below.", "ok");
       return true;
     } catch(err){ studioStatus("could not run: "+err.message, "err"); return false; }
@@ -1994,8 +2723,8 @@ void runOneControlCycle() {
     }).join("\n");
   }
   function studioCompileTraced(){
-    if (STUDIO.lang!=="js") throw new Error("step-debugging is wired for JavaScript first (Python next)");
-    const instr = instrumentForTrace(STUDIO.editor.getValue());
+    if (activeLang()!=="js") throw new Error("internal: the traced compile path is JavaScript only");
+    const instr = instrumentForTrace(activeControllerSource());
     const factory = new Function("__trace", instr + "\n;return { entry:(typeof runOneControlCycle!=='undefined')?runOneControlCycle:((typeof tick!=='undefined')?tick:null) };");
     const mod = factory(dbgTrace);
     if (typeof mod.entry !== "function") throw new Error("this file needs a `function runOneControlCycle(machine, memory)`");
@@ -2035,7 +2764,9 @@ void runOneControlCycle() {
     DBG.inp = senseInputs(e.world);
     e.mem.__beltCmd = o.belt;
     o.belt=0; for(let k=0;k<N_DISP;k++){ o.gate[k]=true; o.dispense[k]=false; } o.heater=false; o.tunnelGateOpen=true;
-    const io = makeIO(e.world, o, DBG.inp, e.mem);
+    if (!e.io) e.io = makeIO(e.world, o, e.mem);
+    refreshIO(e.io, DBG.inp, e.mem);
+    const io = e.io;
     DBG.trace=[]; DBG.snapOut=o; DBG.collecting=true;
     let tracks;
     try { tracks = e.controller(io, e.mem); }
@@ -2054,8 +2785,8 @@ void runOneControlCycle() {
   async function dbgStart(){
     if (viewMode!=="studio") return;
     try {
-      if (STUDIO.lang==="python"){ STUDIO.compiled = await studioCompilePython(); DBG.primeFn = dbgPrimePy; }
-      else if (STUDIO.lang==="cpp"){ STUDIO.cppModule = await cppCompile(); DBG.primeFn = dbgPrimeCpp; }
+      if (activeLang()==="python"){ STUDIO.compiled = await studioCompilePython(); DBG.primeFn = dbgPrimePy; }
+      else if (activeLang()==="cpp"){ STUDIO.cppModule = await cppCompile(); DBG.primeFn = dbgPrimeCpp; }
       else { STUDIO.compiled = studioCompileTraced(); DBG.primeFn = dbgPrime; }
     } catch(err){ studioStatus("could not debug: "+err.message, "err"); return; }
     reset(); injectTray();
@@ -2084,7 +2815,7 @@ void runOneControlCycle() {
   // exec the student's Python, capture tick(); returns a JS controller (io,mem)->tracks
   async function studioCompilePython(){
     const py = await loadPyo();
-    py.globals.set("_src", STUDIO.editor.getValue());
+    py.globals.set("_src", activeControllerSource());
     py.runPython("_ns = {}\nexec(_src, _ns)\n_mem = {}");
     py.runPython("_entry = _ns.get('run_one_control_cycle') or _ns.get('tick')");
     if (!py.runPython("callable(_entry)")) throw new Error("this file needs a `def run_one_control_cycle(machine, memory)`");
@@ -2102,8 +2833,9 @@ void runOneControlCycle() {
     DBG.inp = senseInputs(e.world);
     e.mem.__beltCmd = o.belt;
     o.belt=0; for(let k=0;k<N_DISP;k++){ o.gate[k]=true; o.dispense[k]=false; } o.heater=false; o.tunnelGateOpen=true;
-    const io = makeIO(e.world, o, DBG.inp, e.mem);
-    py.globals.set("_io", io);
+    if (!e.io) e.io = makeIO(e.world, o, e.mem);
+    refreshIO(e.io, DBG.inp, e.mem);
+    py.globals.set("_io", e.io);
     py.runPython([
       "_dbg = []",
       "def _tr(frame, event, arg):",
@@ -2209,7 +2941,7 @@ void runOneControlCycle() {
     // from the staged sources — the starter includes it for WATCH(name, value).
     if (!STUDIO.watchHdr) STUDIO.watchHdr = await (await fetch("./src/smores/Watch.h", {cache:"no-cache"})).text();
     api.memfs.addFile("Watch.h", STUDIO.watchHdr);
-    const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(STUDIO.editor.getValue());
+    const src = HOST_TRACE_DECL + "\n" + cppInstrumentTick(activeControllerSource());
     studioStatus("compiling your C++ with clang → WebAssembly (in the browser)…");
     // clang reports problems by exiting non-zero; without this the student would only
     // ever see "process exited with code 1", which explains nothing.
@@ -2319,12 +3051,7 @@ void runOneControlCycle() {
   $("viewSingle").addEventListener("click", ()=>setView("single"));
   $("viewCompare").addEventListener("click", ()=>setView("compare"));
   $("viewStudio").addEventListener("click", ()=>setView("studio"));
-  document.querySelectorAll(".lang-tab").forEach(b=>b.addEventListener("click", ()=>{
-    if(DBG.on) dbgStop();
-    if (b.dataset.file === "layout")   return openLayoutFile();
-    if (b.dataset.file === "hal")      return openHalFile($("halPick").value || HAL_FILES[0].key);
-    setStudioLang(b.dataset.lang);
-  }));
+
   $("applyBtn").addEventListener("click", applyLayoutEdit);
   $("exportBtn").addEventListener("click", ()=>{
     const text = STUDIO.models.layout.getValue();
@@ -2339,9 +3066,10 @@ void runOneControlCycle() {
   $("revertBtn").addEventListener("click", ()=>{
     if(DBG.on) dbgStop();
     if(!STUDIO.editor) return;
-    if (STUDIO.file === "layout"){ STUDIO.models.layout.setValue(LAYOUT_JSON_TEXT); studioStatus("reverted layout.json to the shipped layout"); return; }
-    if (STUDIO.file === "hal"){ loadHalSources(); studioStatus("reloaded the HAL sources from the server"); return; }
-    STUDIO.editor.setValue(STARTER(STUDIO.lang)); studioStatus("reverted to the starter controller");
+    const spec = openFileSpec();
+    if (spec.kind === "layout"){ STUDIO.models.layout.setValue(LAYOUT_JSON_TEXT); studioStatus("layout.json restored"); return; }
+    if (spec.starter){ STUDIO.editor.setValue(starterTextFor(spec)); studioStatus(spec.label + " restored"); return; }
+    loadProjectSources(); studioStatus(spec.label + " reloaded from the server");
   });
   $("dbgBtn").addEventListener("click", dbgStart);
   $("dbgStepLine").addEventListener("click", dbgStepLine);
